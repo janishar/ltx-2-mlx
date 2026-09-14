@@ -136,6 +136,21 @@ Gemma-4 text encoder (`text_encoder.safetensors`); no `mlx-community`
 Gemma download happens on this path. `--image` (I2V) works the same as on
 2.3.
 
+**Official Lightricks weights (no conversion step).** `--model` can also point
+at a directory of the original bf16 files from
+[Lightricks/LTX-2.5](https://huggingface.co/Lightricks/LTX-2.5) (files are found
+by name anywhere under it). Weights are converted in memory at load time and the
+transformer + Gemma Linear weights quantized per `--quantize-on-load` (`8`
+default, `4`, or `none` for bf16); only small config/tokenizer files are written,
+to `.cache/virtual-packs/` in the repo. Requires the conv video VAE, audio VAE,
+Gemma-4 text encoder and a transformer; quantization repeats on every run, and
+`--low-ram` is not supported on this path.
+
+```bash
+ltx-2-mlx generate --distilled --model /path/to/Lightricks-LTX-2.5 \
+    --prompt "a heavy wooden door creaks slowly open" --frame-rate 24 -o out.mp4
+```
+
 **`-f/--frames` is optional on 2.5 packs**: omit it and the pack's
 `DurationHead` predicts a clip length (seconds) from the encoded prompt
 right after text encoding, snapped to the model's frame grid. Pass

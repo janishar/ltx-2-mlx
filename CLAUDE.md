@@ -285,6 +285,8 @@ Key reference paths:
 
 Weight conversion is handled by [mlx-forge](https://github.com/dgrauet/mlx-forge). This package loads pre-converted weights only.
 
+**Exception — official LTX-2.5 files** (`ltx_core_mlx/loader/official_pack.py`): when `--model` is a directory of the official Lightricks files, `resolve_model_dir` builds a *virtual pack* in `<repo>/.cache/virtual-packs/` (configs, tokenizer assets, and header-only placeholder `.safetensors` files whose metadata names the source). `load_split_safetensors` converts placeholders in memory using mlx-forge's rules (vendored, not reimplemented) and quantizes per `--quantize-on-load {8,4,none}` (env `LTX_MLX_QUANTIZE_ON_LOAD`). Nothing converted is written to disk. Keep those rules in sync with mlx-forge's `recipes/ltx_25.py` and bump `VIRTUAL_PACK_FORMAT` when they change. Not supported on virtual packs: `--low-ram` (BlockStreamer reads the file directly).
+
 ### 5. Positions Must Be in Pixel-Space
 
 Video positions use pixel-space coordinates with causal fix, divided by fps:

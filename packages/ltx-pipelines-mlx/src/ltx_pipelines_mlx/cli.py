@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from typing import TYPE_CHECKING
@@ -38,6 +39,16 @@ def _add_base_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output", "-o", required=True, help="Output video path (.mp4)")
     parser.add_argument(
         "--model", "-m", default=DEFAULT_MODEL, help=f"Model weights (HF repo or path, default: {DEFAULT_MODEL})"
+    )
+    parser.add_argument(
+        "--quantize-on-load",
+        choices=["8", "4", "none"],
+        default="8",
+        help=(
+            "Only for --model pointing at official Lightricks LTX-2.5 files (not an mlx-forge pack): "
+            "weights are converted in memory at load time and the transformer + Gemma Linear weights "
+            "quantized to int8 / int4, or kept bf16 with 'none' (default: 8)."
+        ),
     )
     parser.add_argument(
         "--gemma", default=DEFAULT_GEMMA, help=f"Gemma model for text encoding (default: {DEFAULT_GEMMA})"
@@ -852,6 +863,12 @@ def main() -> None:
     if args.command is None:
         parser.print_help()
         sys.exit(1)
+
+    # Read by loader.official_pack when --model is a directory of official weights.
+    if getattr(args, "quantize_on_load", None) is not None:
+        from ltx_core_mlx.loader.official_pack import QUANTIZE_ENV
+
+        os.environ[QUANTIZE_ENV] = args.quantize_on_load
 
     # Resolve seed=-1 to a random value
     if hasattr(args, "seed") and args.seed < 0:

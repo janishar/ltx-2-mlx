@@ -33,10 +33,16 @@ if TYPE_CHECKING:
 
 
 def resolve_model_dir(model_dir: str | Path) -> Path:
-    """Resolve a model dir — return local path or download from HuggingFace."""
+    """Resolve a model dir — return local path or download from HuggingFace.
+
+    A local directory of official Lightricks LTX-2.5 files resolves to a
+    virtual pack that converts weights at load time (see ``loader.official_pack``).
+    """
+    from ltx_core_mlx.loader.official_pack import resolve_official_model_dir
+
     path = Path(model_dir)
     if path.exists():
-        return path
+        return resolve_official_model_dir(path)
     return Path(snapshot_download(str(model_dir)))
 
 
@@ -106,6 +112,15 @@ def load_transformer(
     ``av_ca_timestep_scale_multiplier`` track the checkpoint rather than the
     hardcoded dataclass defaults (issue #37).
     """
+    if low_ram_streaming:
+        from ltx_core_mlx.loader.official_pack import is_virtual_file
+
+        if is_virtual_file(transformer_path):
+            raise ValueError(
+                "--low-ram block streaming reads a converted transformer file directly and is not "
+                "supported with official (unconverted) Lightricks weights. Drop --low-ram, or use a "
+                "pack converted with mlx-forge."
+            )
     config = LTXModelConfig.from_checkpoint_dir(transformer_path.parent)
     validate_config_matches_weights(transformer_path, config)
     dit = LTXModel(config)

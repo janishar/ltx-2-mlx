@@ -89,9 +89,11 @@ def _video_vae_names(model_dir: str | Path) -> tuple[str, str]:
 
 def _resolve_model_dir(model_dir: str | Path) -> Path:
     """Resolve a model dir — download from HuggingFace if not a local path."""
+    from ltx_core_mlx.loader.official_pack import resolve_official_model_dir
+
     path = Path(model_dir)
     if path.exists():
-        return path
+        return resolve_official_model_dir(path)
     from huggingface_hub import snapshot_download
 
     return Path(snapshot_download(str(model_dir)))

@@ -24,7 +24,14 @@ def load_split_safetensors(
     Returns:
         Dict mapping parameter names to MLX arrays.
     """
+    # Lazy-import to avoid a loader <-> utils.weights cycle at module load.
+    from ltx_core_mlx.loader.official_pack import is_virtual_file, load_virtual
+
     path = Path(path)
+    if is_virtual_file(path):
+        # Placeholder from a virtual pack over official Lightricks weights:
+        # convert (and quantize) the component from its source file.
+        return load_virtual(path, prefix)
     raw = mx.load(str(path))
 
     if not prefix:

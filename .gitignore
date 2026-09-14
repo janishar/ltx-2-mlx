@@ -37,3 +37,28 @@ Thumbs.db
 
 # Local benchmark / regression test artifacts
 regression_tests/
+
+# Virtual packs built from official Lightricks weights (configs + tokenizer assets only)
+/.cache/
+
+# Tool caches
+.ty_cache/
+.hypothesis/
+.tox/
+.nox/
+coverage.xml
+.coverage.*
+.ipynb_checkpoints/
+node_modules/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+
+# Run outputs (trainer default output dir, stepwise previews, HDR frames, logs)
+outputs/
+wandb/
+*.log
+*.webp
+*.exr
