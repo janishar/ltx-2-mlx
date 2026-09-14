@@ -4,7 +4,6 @@
 
 "use strict";
 
-const $ = (id) => document.getElementById(id);
 const TASKS = Object.fromEntries(LTX_TASKS.map((t) => [t.id, t]));
 // Subcommands whose pipelines accept the --stepwise-* live preview flags.
 const PREVIEW_COMMANDS = new Set(["generate", "a2v", "retake", "extend", "keyframe", "ic-lora", "hdr-ic-lora", "lipdub"]);
@@ -36,50 +35,15 @@ const S = {
   livePreview: null,
   scrub: null,
   restoring: false,
+  runningId: null,
+  estimate: null,        // pre-render estimate for the current form, from /api/estimate
+  compare: [],           // take names picked for the seed grid / A/B wipe
+  compareBatch: null,    // {ids: Set, outputs: []} while "Queue 3 seeds" runs
+  batchOpening: false,   // the seed grid is about to open; don't auto-select a take
+  inputFilter: "all",
 };
 
-// ── utilities ────────────────────────────────────────────────────────────
-
-async function api(path, body, method) {
-  // The server refuses state-changing requests without a JSON content type (CSRF guard).
-  const opts = body === undefined
-    ? { method: method || "GET" }
-    : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
-  const res = await fetch(path, opts);
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || (data && data.error)) throw new Error((data && data.error) || `HTTP ${res.status}`);
-  return data;
-}
-
-function el(tag, attrs = {}, ...children) {
-  const node = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (v === undefined || v === null || v === false) continue;
-    if (k === "class") node.className = v;
-    else if (k === "text") node.textContent = v;
-    else if (k === "value") node.value = v;
-    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
-    else if (k in node && typeof v !== "string") node[k] = v;
-    else node.setAttribute(k, v === true ? "" : v);
-  }
-  for (const child of children.flat()) if (child !== null && child !== undefined) node.append(child);
-  return node;
-}
-
-// num() comes from tasks.js (shared global).
-const fmtSecs = (s) => (s >= 60 ? `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, "0")}s` : `${s.toFixed(1)}s`);
-const randomSeed = () => Math.floor(Math.random() * 2 ** 31);
-
-function splitArgs(text) {
-  const out = [];
-  for (const m of (text || "").matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) out.push(m[1] ?? m[2] ?? m[3]);
-  return out;
-}
-
-function debounce(fn, ms) {
-  let t;
-  return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
-}
+// num() comes from tasks.js; $, el, api, debounce, fmtSecs, toast, … from util.js.
 
 function inputByName(name) { return S.inputs.find((i) => i.name === name); }
 function inputMeta(name) { const i = inputByName(name); return (i && i.probe) || {}; }
@@ -392,12 +356,31 @@ function renderCanvas() {
   }
   $("sizeWarn").hidden = !message;
   $("sizeWarn").textContent = message;
+
+  // The pipelines resize and centre-crop conditioning media to the canvas.
+  let aspectMessage = "";
+  if (task.blocks && task.blocks.canvas && input && c.aspect !== "input") {
+    const off = Math.abs(input.ratio / (width / height) - 1);
+    if (off > 0.03) {
+      aspectMessage = `The selected input is ${input.width}×${input.height} (${input.ratio.toFixed(2)}:1) but the canvas is ${(width / height).toFixed(2)}:1 — it will be cropped. Pick "Match input" to follow it.`;
+    }
+  }
+  $("aspectWarn").hidden = !aspectMessage;
+  $("aspectWarn").textContent = aspectMessage;
   for (const b of $("sizePresets").children) b.classList.toggle("on", +b.dataset.w === width && +b.dataset.h === height);
 }
 
 function renderDuration() {
   const { frames, fps } = S.common;
-  $("frameSlider").value = String((frames - 1) / 8);
+  const slider = $("frameSlider");
+  const maxFrames = Number(slider.max) * 8 + 1;
+  const marks = [1, 2, 5, 10, 15, 20, 30].filter((sec) => sec * fps >= 9 && sec * fps <= maxFrames);
+  const shown = marks.length > 4 ? marks.filter((_, i) => i % 2 === marks.length % 2) : marks;
+  $("durationMarkers").replaceChildren(...shown.map((sec) => el("span", {
+    style: { left: `${(100 * ((sec * fps - 1) / 8 - Number(slider.min))) / (Number(slider.max) - Number(slider.min))}%` },
+    text: `${sec}s`,
+  })));
+  slider.value = String((frames - 1) / 8);
   $("frameCount").textContent = frames;
   $("frameSecs").textContent = `${(frames / fps).toFixed(2)} s`;
   $("autoDurationRange").hidden = !S.common.autoDuration;
@@ -510,7 +493,24 @@ function refreshPreview() {
   const errors = collectErrors(task, taskValues());
   $("renderBtn").disabled = errors.length > 0;
   $("queueSeedsBtn").disabled = errors.length > 0 || !(task.blocks && task.blocks.seed);
+  $("errors").hidden = true;
+  refreshEstimate(req.params);
 }
+
+/** Pre-render estimate from this session's finished takes (median of matching takes). */
+const refreshEstimate = debounce(async (params) => {
+  if (!S.session) return;
+  try {
+    S.estimate = await api("/api/estimate", { session: S.session, params });
+  } catch (e) {
+    S.estimate = null;
+  }
+  const est = S.estimate || {};
+  $("estimate").textContent = est.seconds ? `${est.exact ? "≈" : "~"} ${fmtSecs(est.seconds)}` : "";
+  $("estimate").title = est.seconds
+    ? `${est.exact ? "Median of" : "Scaled from"} ${est.samples} finished take${est.samples === 1 ? "" : "s"} in this session${est.exact ? " with the same settings" : " of this task"}`
+    : "";
+}, 400);
 
 async function submit(count) {
   const task = TASKS[S.taskId];
@@ -518,10 +518,15 @@ async function submit(count) {
   $("errors").hidden = errors.length === 0;
   $("errors").textContent = errors.join("\n");
   if (errors.length) return;
+  if (count > 1 && !(task.blocks && task.blocks.seed)) return;
   const seeds = count === 1 ? [S.common.seed] : Array.from({ length: count }, randomSeed);
   try {
-    await api("/api/render", { jobs: seeds.map((s) => buildRequest(s)) });
-    saveSettings();
+    const { jobs } = await api("/api/render", { jobs: seeds.map((s) => buildRequest(s)) });
+    if (count > 1) {
+      trackCompareBatch(jobs);
+      toast(`Queued ${jobs.length} seeds — the takes open side by side when they finish.`, { timeout: 4000 });
+    }
+    saveSettings.flush();
   } catch (e) {
     $("errors").hidden = false;
     $("errors").textContent = e.message;
@@ -564,7 +569,17 @@ async function loadInputs() {
 
 function renderLibrary() {
   $("inputCount").textContent = S.inputs.length ? String(S.inputs.length) : "";
-  $("library").replaceChildren(...S.inputs.map((i) => {
+  const kinds = ["image", "video", "audio"].filter((k) => S.inputs.some((i) => i.kind === k));
+  const showFilter = S.inputs.length > 8 && kinds.length > 1;
+  if (!showFilter || (S.inputFilter !== "all" && !kinds.includes(S.inputFilter))) S.inputFilter = "all";
+  $("inputFilter").hidden = !showFilter;
+  $("inputFilter").replaceChildren(...["all", ...kinds].map((k) => el("button", {
+    type: "button", class: S.inputFilter === k ? "on" : "", "aria-pressed": String(S.inputFilter === k),
+    text: k === "all" ? "All" : `${k[0].toUpperCase()}${k.slice(1)}s`,
+    onclick: () => { S.inputFilter = k; renderLibrary(); },
+  })));
+  const shown = S.inputFilter === "all" ? S.inputs : S.inputs.filter((i) => i.kind === S.inputFilter);
+  $("library").replaceChildren(...shown.map((i) => {
     let thumb = el("div", { class: "glyph", text: i.name });
     if (i.kind === "image") thumb = el("img", { src: i.url, alt: i.name, loading: "lazy" });
     else if (i.kind === "video") thumb = el("img", { src: i.thumb, alt: i.name, loading: "lazy" });
@@ -578,7 +593,7 @@ function renderLibrary() {
       el("button", { class: "delete-file", type: "button", title: "Delete input", text: "×",
         onclick: async (e) => {
           e.stopPropagation();
-          if (!confirm(`Delete ${i.name} from this session?`)) return;
+          if (!confirm(`Permanently delete this input from the session?\n${i.name}\n\nTasks that use it will need another input. This cannot be undone.`)) return;
           await api("/api/inputs/delete", { session: S.session, name: i.name });
           loadInputs();
         } }));
@@ -605,18 +620,12 @@ function fillSlot(input) {
       row[rowsField.itemFields.find((i) => i.type === "media").key] = input.name;
       (v[rowsField.key] ||= []).push(row);
     } else {
-      flashError(`${task.label} has no empty ${input.kind} slot.`);
+      toast(`${task.label} has no empty ${input.kind} slot.`, { timeout: 4000 });
       return;
     }
   }
   renderTask();
   saveSettings();
-}
-
-function flashError(message) {
-  $("errors").hidden = false;
-  $("errors").textContent = message;
-  setTimeout(() => { $("errors").hidden = true; }, 4000);
 }
 
 async function uploadFiles(files) {
@@ -630,214 +639,16 @@ async function uploadFiles(files) {
       if (!res.ok || data.error) throw new Error(data.error || `upload failed (${res.status})`);
       added.push(data);
     } catch (e) {
-      flashError(`${file.name}: ${e.message}`);
+      toast(`${file.name}: ${e.message}`, { kind: "error" });
     }
   }
   await loadInputs();
   for (const a of added) { const item = inputByName(a.name); if (item) fillSlot(item); }
 }
 
-// ── takes ────────────────────────────────────────────────────────────────
-
-async function loadTakes(selectNewest = false) {
-  S.takes = await api(`/api/takes?session=${encodeURIComponent(S.session)}`);
-  if (selectNewest && S.takes.length) selectTake(S.takes[0].name, false);
-  renderTakes();
-}
-
-function takeMeta(t) {
-  const p = t.probe || {};
-  const bits = [];
-  if (t.label) bits.push(t.label);
-  if (p.width) bits.push(`${p.width}×${p.height}`);
-  if (p.frames) bits.push(`${p.frames}f`);
-  else if (p.duration) bits.push(`${p.duration.toFixed(1)}s`);
-  if (t.seed !== undefined && t.seed !== null) bits.push(`seed ${t.seed}`);
-  if (t.elapsed) bits.push(fmtSecs(t.elapsed));
-  return bits.join(" · ");
-}
-
-function opButton(text, title, fn) {
-  return el("button", { class: "ghost", type: "button", text, title,
-    onclick: async (e) => { e.stopPropagation(); try { await fn(); } catch (err) { flashError(err.message); } } });
-}
-
-function renderTakes() {
-  $("takeCount").textContent = S.takes.length ? String(S.takes.length) : "";
-  if (!S.takes.length) {
-    $("takeList").replaceChildren(el("li", { class: "take-empty", text: "No takes yet in this session." }));
-    return;
-  }
-  $("takeList").replaceChildren(...S.takes.map((t) => el("li", { class: t.name === S.selectedTake ? "on" : "", onclick: () => selectTake(t.name) },
-    el("div", { class: "row" },
-      el("div", { class: "thumb" }, el("img", { src: t.thumb, alt: "", loading: "lazy" })),
-      el("div", { class: "info" },
-        el("div", { class: "nm", text: t.name, title: t.name }),
-        el("div", { class: "meta", text: takeMeta(t) }))),
-    el("div", { class: "ops" },
-      t.params ? opButton("Reuse settings", "Restore the task, inputs and settings of this take", async () => restore(t.params)) : null,
-      t.previews && t.previews.length ? opButton(`Previews (${t.previews.length})`, "Scrub through the live previews saved during this render", async () => openScrubber(t)) : null,
-      opButton("Chain →", "Use the last frame as the start image of Image → Video", async () => {
-        const { name } = await api("/api/frame", { session: S.session, take: t.name, position: "last" });
-        await loadInputs();
-        S.taskId = "i2v";
-        taskValues("i2v").image = name;
-        renderTask();
-        saveSettings();
-      }),
-      opButton("Last frame", "Add the last frame to inputs", async () => { await api("/api/frame", { session: S.session, take: t.name, position: "last" }); await loadInputs(); }),
-      opButton("First frame", "Add the first frame to inputs", async () => { await api("/api/frame", { session: S.session, take: t.name, position: "first" }); await loadInputs(); }),
-      opButton("Use video", "Copy this take into inputs (retake, extend, control)", async () => { await api("/api/use-video", { session: S.session, take: t.name }); await loadInputs(); }),
-      t.probe && t.probe.has_audio ? opButton("Use audio", "Extract the audio track into inputs", async () => { await api("/api/audio", { session: S.session, take: t.name }); await loadInputs(); }) : null,
-      opButton("Delete", "Delete this take", async () => {
-        if (!confirm(`Delete ${t.name}?`)) return;
-        await api("/api/takes/delete", { session: S.session, name: t.name });
-        if (S.selectedTake === t.name) showInViewer(null);
-        await loadTakes();
-      })))));
-}
-
-function hidePreview() {
-  $("previewImg").hidden = true;
-  $("previewImg").removeAttribute("src");
-  $("previewBadge").hidden = true;
-  $("previewScrub").hidden = true;
-  S.scrub = null;
-}
-
-function showPreviewImage(url, badge) {
-  const player = $("player");
-  player.pause();
-  player.classList.remove("on");
-  $("viewerEmpty").hidden = true;
-  $("previewImg").src = url;
-  $("previewImg").hidden = false;
-  $("previewBadge").textContent = badge;
-  $("previewBadge").hidden = false;
-}
-
-function previewLabel(info) {
-  const stage = info.stage ? ` · stage ${info.stage}` : "";
-  return `Preview step ${info.step}/${info.total}${stage}`;
-}
-
-function showLivePreview(info) {
-  S.livePreview = info;
-  if (!S.followPreview) return;
-  $("previewScrub").hidden = true;
-  S.scrub = null;
-  $("viewerCaption").hidden = false;
-  $("viewerCaption").textContent = `live preview · ${info.name}${info.count ? ` · ${info.count} so far` : ""}`;
-  showPreviewImage(`${info.url}?t=${info.count || 0}`, previewLabel(info));
-}
-
-function openScrubber(take) {
-  const list = take.previews || [];
-  if (!list.length) return;
-  S.followPreview = false;
-  S.scrub = { take, list };
-  const slider = $("previewSlider");
-  slider.max = String(list.length - 1);
-  slider.value = String(list.length - 1);
-  $("previewScrub").hidden = false;
-  renderScrub();
-}
-
-function renderScrub() {
-  if (!S.scrub) return;
-  const path = S.scrub.list[Number($("previewSlider").value)];
-  const name = path.split("/").pop();
-  const m = name.match(/_s(\d+)_step(\d+)of(\d+)\.webp$/) || name.match(/_step(\d+)of(\d+)\.webp$/);
-  const info = m && m.length === 4 ? { stage: Number(m[1]), step: Number(m[2]), total: Number(m[3]) } : m ? { stage: 0, step: Number(m[1]), total: Number(m[2]) } : { stage: 0, step: 0, total: 0 };
-  $("previewScrubLabel").textContent = `${Number($("previewSlider").value) + 1}/${S.scrub.list.length}`;
-  $("viewerCaption").hidden = false;
-  $("viewerCaption").textContent = `${S.scrub.take.name} · previews · ${name}`;
-  showPreviewImage(`/sfile/${path}`, previewLabel(info));
-  $("previewScrub").hidden = false;
-}
-
-function showInViewer(item, caption = "") {
-  hidePreview();
-  const player = $("player");
-  if (item) {
-    player.src = item.url;
-    player.classList.add("on");
-    $("viewerEmpty").hidden = true;
-    $("viewerCaption").hidden = false;
-    $("viewerCaption").textContent = caption;
-  } else {
-    S.selectedTake = null;
-    S.selectedTimeline = null;
-    player.removeAttribute("src");
-    player.load();
-    player.classList.remove("on");
-    $("viewerEmpty").hidden = false;
-    $("viewerCaption").hidden = true;
-  }
-  document.querySelectorAll("#takeList li").forEach((li, i) => li.classList.toggle("on", !!S.takes[i] && S.takes[i].name === S.selectedTake));
-  document.querySelectorAll("#timelineList li").forEach((li, i) => li.classList.toggle("on", !!S.timeline[i] && S.timeline[i].name === S.selectedTimeline));
-}
-
-function selectTake(name, fromUser = true) {
-  if (fromUser) S.followPreview = false;
-  const take = S.takes.find((t) => t.name === name);
-  S.selectedTake = take ? name : null;
-  S.selectedTimeline = null;
-  if (!take) return showInViewer(null);
-  const prompt = take.params && take.params.common && take.params.common.prompt;
-  showInViewer(take, [take.name, takeMeta(take), prompt ? `“${prompt}”` : ""].filter(Boolean).join("  ·  "));
-}
-
 // ── timeline (combined clips, follows h3 studio) ─────────────────────────
 
 const TL = { seq: [], browse: null, dragFrom: null };
-
-async function loadTimeline(selectName = null) {
-  S.timeline = await api(`/api/timeline?session=${encodeURIComponent(S.session)}`);
-  renderTimelineList();
-  if (selectName) selectTimeline(selectName);
-}
-
-function timelineMeta(t) {
-  const p = t.probe || {};
-  const bits = [];
-  if (t.clips) bits.push(`${t.clips.length} clip${t.clips.length === 1 ? "" : "s"}`);
-  if (p.width) bits.push(`${p.width}×${p.height}`);
-  if (p.duration) bits.push(`${p.duration.toFixed(1)}s`);
-  return bits.join(" · ") || "combined";
-}
-
-function renderTimelineList() {
-  $("timelineCount").textContent = S.timeline.length ? String(S.timeline.length) : "";
-  if (!S.timeline.length) {
-    $("timelineList").replaceChildren(el("li", { class: "take-empty", text: "No combined videos yet. Use Create Timeline above to build one." }));
-    return;
-  }
-  $("timelineList").replaceChildren(...S.timeline.map((t) => el("li", { class: t.name === S.selectedTimeline ? "on" : "", onclick: () => selectTimeline(t.name) },
-    el("div", { class: "row" },
-      el("div", { class: "thumb" }, el("img", { src: t.thumb, alt: "", loading: "lazy" })),
-      el("div", { class: "info" },
-        el("div", { class: "nm", text: t.name, title: (t.clips || []).join("\n") || t.name }),
-        el("div", { class: "meta", text: timelineMeta(t) }))),
-    el("div", { class: "ops" },
-      opButton("Use video", "Copy this combined video into inputs (retake, extend, control)", async () => { await api("/api/use-video", { session: S.session, kind: "timeline", name: t.name }); await loadInputs(); }),
-      opButton("Delete", "Delete this combined video", async () => {
-        if (!confirm(`Delete ${t.name}?`)) return;
-        await api("/api/timeline/delete", { session: S.session, name: t.name });
-        if (S.selectedTimeline === t.name) showInViewer(null);
-        await loadTimeline();
-      })))));
-}
-
-function selectTimeline(name) {
-  S.followPreview = false;
-  const item = S.timeline.find((t) => t.name === name);
-  S.selectedTimeline = item ? name : null;
-  S.selectedTake = null;
-  if (!item) return showInViewer(null);
-  showInViewer(item, [item.name, timelineMeta(item), ...(item.clips || []).map((c, i) => `${i + 1}. ${c}`)].join("  ·  "));
-  $("player").play().catch(() => {});
-}
 
 function openTimelineModal() {
   TL.seq = [];
@@ -987,11 +798,15 @@ async function combineTimeline() {
 
 // ── queue, progress, terminal ────────────────────────────────────────────
 
+const STAGES = [["encode", "Encode"], ["load", "Load"], ["denoise", "Denoise"], ["decode", "Decode"], ["save", "Save"]];
+const NOTIFY_KEY = "ltxstudio-notify";
 let elapsedTimer = null;
+
+const isActive = (job) => job.status === "running" || job.status === "cancelling";
 
 function renderQueue(items) {
   S.queue = items;
-  const running = items.find((j) => j.status === "running" || j.status === "cancelling");
+  const running = items.find(isActive);
   const pending = items.filter((j) => j.status === "queued");
   if (running && S.runningId !== running.id) {
     S.runningId = running.id;
@@ -1000,34 +815,121 @@ function renderQueue(items) {
   }
   if (!running) S.runningId = null;
   $("lamp").classList.toggle("busy", !!running);
-  $("lampText").textContent = running ? (pending.length ? `busy · ${pending.length} queued` : "busy") : "idle";
+  $("lampText").textContent = running ? (pending.length ? `busy · ${pending.length} queued` : "busy") : pending.length ? `${pending.length} queued` : "idle";
   $("running").hidden = !running;
-  if (running) renderRunning(running);
   clearInterval(elapsedTimer);
-  if (running) elapsedTimer = setInterval(() => renderRunning(S.queue.find((j) => j.id === running.id) || running), 1000);
+  if (running) {
+    renderRunning(running);
+    elapsedTimer = setInterval(renderRunningFromQueue, 1000);
+  } else {
+    document.title = "ltx studio";
+  }
   $("queueWrap").hidden = pending.length === 0;
   $("queueList").replaceChildren(...pending.map((j) => el("li", {},
-    `${j.label}${j.seed !== null && j.seed !== undefined ? ` · seed ${j.seed}` : ""} · queued`,
-    el("button", { class: "ghost sm", type: "button", text: "Remove", onclick: () => api("/api/cancel", { id: j.id }) }))));
+    el("span", { text: `${j.label}${j.seed !== null && j.seed !== undefined ? ` · seed ${j.seed}` : ""}${j.estimate_s ? ` · ≈ ${fmtSecs(j.estimate_s)}` : ""} · queued` }),
+    el("button", { class: "ghost sm", type: "button", text: "Remove",
+      onclick: () => api("/api/cancel", { id: j.id }).catch((err) => toast(err.message, { kind: "error" })) }))));
+}
+
+function renderRunningFromQueue() {
+  const running = S.queue.find(isActive);
+  if (running) renderRunning(running);
+}
+
+/** Rough overall progress for the tab title: stage bands, with denoising weighted most.
+ *  The number of denoising stages isn't known up front, so stage 1 gets most of the band and later
+ *  stages (the short two-stage refine) the rest. */
+function overallPercent(job) {
+  const p = job.progress || {};
+  const denoise = (p.stage || 1) > 1 ? [75, 88] : [15, 75];
+  const bands = { encode: [0, 8], load: [8, 15], denoise, decode: [88, 98], save: [98, 100] };
+  const [lo, hi] = bands[p.stage_key] || [0, 0];
+  return Math.round(lo + (p.stage_key === "denoise" && p.total ? (hi - lo) * Math.min(1, p.step / p.total) : 0));
 }
 
 function renderRunning(job) {
   const p = job.progress || {};
+  const stageIndex = STAGES.findIndex(([key]) => key === p.stage_key);
+  $("stepper").replaceChildren(...STAGES.map(([key, label], i) => el("li", {
+    class: i < stageIndex ? "done" : i === stageIndex ? "active" : "",
+  }, key === "denoise" && i === stageIndex && p.stage > 1 ? `${label} · stage ${p.stage}` : label)));
   const pct = p.total ? Math.min(100, Math.round((100 * p.step) / p.total)) : null;
-  $("phaseName").textContent = `${job.label} — ${job.status === "cancelling" ? "stopping…" : p.phase || "starting"}`;
+  const cancelling = job.status === "cancelling";
+  $("phaseName").textContent = `${job.label} — ${cancelling ? "stopping…" : p.phase || "starting"}`;
   $("phasePct").textContent = p.total ? `${p.step}/${p.total}` : "";
   $("phaseBar").style.width = pct === null ? "" : `${pct}%`;
   $("phaseBar").parentElement.classList.toggle("indeterminate", pct === null);
   const started = job.started ? Date.parse(job.started) : null;
-  $("elapsed").textContent = started ? `${fmtSecs((Date.now() - started) / 1000)} elapsed${p.note ? ` · ${p.note}` : ""}` : "";
-  $("stopBtn").onclick = () => api("/api/cancel", { id: job.id });
+  const elapsed = started ? (Date.now() - started) / 1000 : 0;
+  $("elapsed").textContent = started ? `${fmtSecs(elapsed)} elapsed${p.note ? ` · ${p.note}` : ""}` : "";
+  let eta = "";
+  if (p.stage_key === "denoise" && p.eta_s) {
+    const left = p.eta_s - (Date.now() / 1000 - p.eta_at);
+    eta = left >= 1.5 ? `≈ ${fmtSecs(left)} left in this denoising stage` : "denoising stage almost done";
+  } else if (job.estimate_s && job.estimate_s > elapsed) {
+    eta = `≈ ${fmtSecs(job.estimate_s - elapsed)} left (estimate from earlier takes)`;
+  }
+  $("eta").textContent = eta;
+  $("stopBtn").disabled = cancelling;
+  $("stopBtn").textContent = cancelling ? "Stopping…" : "Stop";
+  $("stopBtn").onclick = () => api("/api/cancel", { id: job.id }).catch((err) => toast(err.message, { kind: "error" }));
   const latest = job.preview_latest || (S.livePreview && S.livePreview.id === job.id ? S.livePreview : null);
   $("followPreviewBtn").hidden = !latest || S.followPreview;
   $("followPreviewBtn").onclick = () => {
     S.followPreview = true;
+    S.selectedTake = null;
+    S.selectedTimeline = null;
+    markSelection();
     showLivePreview({ ...latest, id: job.id, count: job.preview_count || latest.count });
     $("followPreviewBtn").hidden = true;
   };
+  document.title = `(${overallPercent(job)}%) ltx studio`;
+}
+
+function onJobEvent(job) {
+  const idx = S.queue.findIndex((j) => j.id === job.id);
+  if (idx >= 0) { S.queue[idx] = job; renderQueue(S.queue); }
+  noteBatchJob(job);
+  if (job.status === "failed") {
+    toast(`${job.label} failed: ${job.error || "unknown error"}`, { kind: "error", hint: job.hint || "", timeout: 15000 });
+    notify(`Render failed: ${job.label}`, job.error || "");
+  } else if (job.status === "done") {
+    if (job.session !== S.session) toast(`${job.label} finished in session ${job.session}.`, { kind: "ok" });
+    notify(`Render finished: ${job.label}`, job.elapsed ? `in ${fmtSecs(job.elapsed)}` : "");
+  }
+}
+
+function notify(title, body) {
+  const enabled = safeStorage(() => localStorage.getItem(NOTIFY_KEY) === "1", false);
+  if (!enabled || !("Notification" in window) || Notification.permission !== "granted" || !document.hidden) return;
+  try { new Notification(title, { body }); } catch (e) { /* notifications unavailable */ }
+}
+
+function renderNotifyButton() {
+  const on = safeStorage(() => localStorage.getItem(NOTIFY_KEY) === "1", false) && "Notification" in window && Notification.permission === "granted";
+  $("notifyButton").classList.toggle("on", on);
+  $("notifyButton").setAttribute("aria-pressed", String(on));
+  $("notifyButton").title = on ? "Notifications on — click to turn off" : "Notify me when a render finishes while this tab is in the background";
+}
+
+async function toggleNotify() {
+  if (!("Notification" in window)) { toast("This browser doesn't support notifications."); return; }
+  const on = safeStorage(() => localStorage.getItem(NOTIFY_KEY) === "1", false);
+  if (on) {
+    safeStorage(() => localStorage.setItem(NOTIFY_KEY, "0"));
+  } else {
+    const permission = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
+    if (permission !== "granted") { toast("Notifications are blocked for this page in the browser settings."); return; }
+    safeStorage(() => localStorage.setItem(NOTIFY_KEY, "1"));
+    toast("You'll get a notification when a render finishes while this tab is in the background.", { kind: "ok", timeout: 4000 });
+  }
+  renderNotifyButton();
+}
+
+function logClass(line, kind) {
+  if (kind === "cmd" || line.startsWith("$ ")) return "cmdline";
+  if (kind) return kind;
+  return /^\[studio\].*\b(failed|cancelled)\b/.test(line) ? "failed" : "";
 }
 
 function appendLog(line, replace, kind) {
@@ -1035,27 +937,36 @@ function appendLog(line, replace, kind) {
   if (replace && S.lastLogReplace && out.lastChild) {
     out.lastChild.textContent = `${line}\n`;
   } else {
-    out.append(el("span", { class: kind === "cmd" ? "cmdline" : kind || "", text: `${line}\n` }));
+    out.append(el("span", { class: logClass(line, kind), text: `${line}\n` }));
     while (out.childNodes.length > 4000) out.firstChild.remove();
   }
   S.lastLogReplace = !!replace;
   if ($("followLog").checked) out.scrollTop = out.scrollHeight;
 }
 
+/** Replace the terminal with the session's saved log. */
+async function loadTerminal() {
+  $("terminalOutput").replaceChildren();
+  S.lastLogReplace = false;
+  try {
+    const { lines } = await api(`/api/terminal?session=${encodeURIComponent(S.session)}`);
+    for (const line of lines) appendLog(line, false);
+  } catch (e) { /* the log is a convenience */ }
+}
+
 function connectEvents() {
   const es = new EventSource("/api/events");
+  es.onopen = () => renderQueue(S.queue);
   es.onmessage = (event) => {
     const { type, data } = JSON.parse(event.data);
     if (type === "queue") renderQueue(data);
     else if (type === "progress") {
       const job = S.queue.find((j) => j.id === data.id);
       if (job) { job.progress = data.progress; renderRunning(job); }
-    } else if (type === "log") appendLog(data.line, data.replace, data.kind);
-    else if (type === "job") {
-      const idx = S.queue.findIndex((j) => j.id === data.id);
-      if (idx >= 0) { S.queue[idx] = data; renderQueue(S.queue); }
-      if (data.status === "failed" && data.error) flashError(`${data.label} failed: ${data.error}`);
-    } else if (type === "takes" && data.session === S.session) loadTakes(true);
+    } else if (type === "log") {
+      if (!data.session || data.session === S.session) appendLog(data.line, data.replace, data.kind);
+    } else if (type === "job") onJobEvent(data);
+    else if (type === "takes" && data.session === S.session) loadTakes(true);
     else if (type === "timeline" && data.session === S.session) loadTimeline();
     else if (type === "preview" && data.session === S.session) {
       const job = S.queue.find((j) => j.id === data.id);
@@ -1066,19 +977,84 @@ function connectEvents() {
   es.onerror = () => { $("lampText").textContent = "reconnecting…"; };
 }
 
+/** Drag the terminal's top edge to resize it; the height is remembered per browser. */
+function bindTerminalResize() {
+  const box = $("consoleContainer");
+  const key = "ltxstudio-terminal-height";
+  const saved = Number(safeStorage(() => localStorage.getItem(key), 0));
+  if (saved >= 120) box.style.height = `${saved}px`;
+  let startY = 0, startHeight = 0, dragging = false;
+  const handle = $("resizeHandle");
+  handle.addEventListener("pointerdown", (e) => {
+    dragging = true; startY = e.clientY; startHeight = box.offsetHeight;
+    handle.setPointerCapture(e.pointerId);
+    document.body.classList.add("resizing");
+  });
+  handle.addEventListener("pointermove", (e) => {
+    if (dragging) box.style.height = `${Math.max(120, Math.min(startHeight + (startY - e.clientY), window.innerHeight * 0.75))}px`;
+  });
+  const stop = () => {
+    if (!dragging) return;
+    dragging = false;
+    document.body.classList.remove("resizing");
+    safeStorage(() => localStorage.setItem(key, String(box.offsetHeight)));
+  };
+  handle.addEventListener("pointerup", stop);
+  handle.addEventListener("pointercancel", stop);
+}
+
+// ── prompt history ───────────────────────────────────────────────────────
+
+/** Unique prompts from this session's takes, newest first. */
+function promptHistory() {
+  const seen = new Set();
+  const items = [];
+  for (const t of S.takes) {
+    const text = takePrompt(t).trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    items.push({ text, take: t.name });
+  }
+  return items;
+}
+
+function renderHistoryButton() {
+  $("historyBtn").disabled = promptHistory().length === 0;
+}
+
+function renderHistoryMenu() {
+  const items = promptHistory();
+  $("historyMenu").replaceChildren(...(items.length ? items.map((item) => el("button", {
+    type: "button", role: "menuitem", title: item.text,
+    onclick: (e) => { e.stopPropagation(); closePopmenus(); setPrompt(item.text); },
+  }, el("span", { class: "history-text", text: item.text }), el("small", { text: item.take })))
+    : [el("div", { class: "popmenu-empty", text: "No prompts in this session's takes yet." })]));
+}
+
+function setPrompt(text) {
+  S.common.prompt = text;
+  $("prompt").value = text;
+  $("promptCount").textContent = text ? `${text.trim().split(/\s+/).length} words` : "";
+  refreshPreview();
+  saveSettings();
+  $("prompt").focus();
+}
+
 // ── sessions + model ─────────────────────────────────────────────────────
 
 async function activateSession(name) {
   const res = await api("/api/session/activate", { session: name });
+  closePopmenus();
   S.session = res.name;
   S.values = {};
   S.selectedTake = null;
   S.selectedTimeline = null;
+  S.compare = [];
   const cfg = await api("/api/sessions");
   S.sessions = cfg.sessions;
   renderSessions();
   showInViewer(null);
-  await Promise.all([loadInputs(), loadTakes(), loadTimeline()]);
+  await Promise.all([loadInputs(), loadTakes(), loadTimeline(), loadTerminal()]);
   restore(res.settings);
   if (!res.settings || !res.settings.taskId) { syncCommonInputs(); renderTask(); }
 }
@@ -1097,6 +1073,7 @@ function openSessionModal(mode) {
   $("sessionError").hidden = true;
   $("sessionModal").hidden = false;
   $("sessionNameInput").focus();
+  $("sessionNameInput").select();
   $("confirmSession").onclick = async () => {
     const name = $("sessionNameInput").value.trim();
     try {
@@ -1113,9 +1090,12 @@ function openSessionModal(mode) {
 }
 
 function renderModelCaps(info) {
+  const marks = { ok: "✓", warn: "!", bad: "✕", info: "i" };
+  $("modelChecks").replaceChildren(...(info.checks || []).map((c) => el("li", { class: c.level },
+    el("b", { text: marks[c.level] || "·" }), el("span", { text: c.label }), el("code", { text: c.detail }))));
   const row = (label, ok, text) => [el("b", { text: label }), el("span", { class: ok === null ? "" : ok ? "yes" : "no", text })];
   if (!info.configured) {
-    $("modelCaps").replaceChildren(el("span", { text: "not configured" }));
+    $("modelCaps").replaceChildren();
     return;
   }
   $("modelCaps").replaceChildren(
@@ -1130,9 +1110,55 @@ function renderModelCaps(info) {
 function applyModel(info) {
   S.model = info;
   $("modelButton").classList.toggle("warn-on", !info.configured);
-  $("modelButton").textContent = info.configured ? `Model · ${info.model.split("/").filter(Boolean).pop()}` : "Set model";
+  $("modelButtonText").textContent = info.configured ? `Model · ${info.model.split("/").filter(Boolean).pop()}` : "Set model";
+  $("modelDot").className = `dot ${info.status || ""}`;
+  const problems = (info.checks || []).filter((c) => c.level === "bad" || c.level === "warn").map((c) => `${c.label}: ${c.detail}`);
+  $("modelButton").title = problems.length ? problems.join("\n") : "Model and setup";
   renderModelCaps(info);
   renderTask();
+}
+
+// ── keyboard ─────────────────────────────────────────────────────────────
+
+function onGlobalKeydown(e) {
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.key === "Enter") {
+    e.preventDefault();
+    if ($("sessionModal").hidden && $("modelModal").hidden && $("timelineModal").hidden) submit(e.shiftKey ? 3 : 1);
+    return;
+  }
+  if (e.key === "Escape") {
+    let closed = false;
+    document.querySelectorAll(".modal").forEach((modal) => { if (!modal.hidden) { modal.hidden = true; closed = true; } });
+    $("timelineReviewVideo").pause();
+    if (!$("compare").hidden) { exitCompare(); closed = true; }
+    if ([...document.querySelectorAll(".popmenu")].some((m) => !m.hidden)) { closePopmenus(); closed = true; }
+    if (closed) e.preventDefault();
+    return;
+  }
+  if (mod || e.altKey || isTyping(e.target) || e.target.tagName === "BUTTON" || e.target.tagName === "A") return;
+  if ([...document.querySelectorAll(".modal")].some((modal) => !modal.hidden)) return;
+  const player = $("player");
+  const hasVideo = player.classList.contains("on") && player.currentSrc;
+  if (e.key === " " && hasVideo) {
+    e.preventDefault();
+    if (player.paused) player.play().catch(() => {}); else player.pause();
+  } else if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && hasVideo) {
+    e.preventDefault();
+    player.pause();
+    const take = S.takes.find((t) => t.name === S.selectedTake);
+    const fps = (take && take.probe && take.probe.fps) || S.common.fps || 24;
+    player.currentTime = Math.max(0, player.currentTime + (e.key === "ArrowRight" ? 1 : -1) / fps);
+  } else if (e.key === "j" || e.key === "k") {
+    const names = visibleTakes().map((t) => t.name);
+    if (!names.length) return;
+    const index = names.indexOf(S.selectedTake);
+    const next = index < 0 ? 0 : Math.min(names.length - 1, Math.max(0, index + (e.key === "j" ? 1 : -1)));
+    showSidePanel("takes");
+    selectTake(names[next]);
+    const li = document.querySelector(`#takeList > li[data-name="${CSS.escape(names[next])}"]`);
+    if (li) li.scrollIntoView({ block: "nearest" });
+  }
 }
 
 // ── wiring ───────────────────────────────────────────────────────────────
@@ -1149,6 +1175,18 @@ function bindCommon() {
     refreshPreview();
     saveSettings();
   });
+  $("clearPrompt").addEventListener("click", () => { if (!c.prompt || confirm("Clear the prompt?")) setPrompt(""); });
+  const historyWrap = $("historyBtn").parentElement;
+  $("historyBtn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const menu = $("historyMenu");
+    const open = menu.hidden;
+    closePopmenus(menu);
+    if (open) renderHistoryMenu();
+    menu.hidden = !open;
+    $("historyBtn").setAttribute("aria-expanded", String(open));
+  });
+  historyWrap.addEventListener("click", (e) => e.stopPropagation());
   bindNum("width", "width", renderCanvas);
   bindNum("height", "height", renderCanvas);
   for (const id of ["width", "height"]) {
@@ -1199,6 +1237,17 @@ function bindCommon() {
   })));
 }
 
+function showSidePanel(which) {
+  document.querySelectorAll(".sidetabs button").forEach((b) => {
+    const on = b.dataset.side === which;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-selected", String(on));
+  });
+  $("takesPanel").hidden = which !== "takes";
+  $("timelinePanel").hidden = which !== "timeline";
+  safeStorage(() => localStorage.setItem("ltxstudio-side", which));
+}
+
 function bindChrome() {
   $("taskSelect").addEventListener("change", (e) => { S.taskId = e.target.value; $("errors").hidden = true; renderTask(); saveSettings(); });
   $("renderBtn").addEventListener("click", () => submit(1));
@@ -1208,15 +1257,36 @@ function bindChrome() {
   $("closeTimeline").addEventListener("click", closeTimelineModal);
   $("clearTimeline").addEventListener("click", () => { TL.seq = []; renderSequence(); if (TL.browse) renderBrowser(); });
   $("renderTimeline").addEventListener("click", combineTimeline);
+  $("notifyButton").addEventListener("click", toggleNotify);
+
+  document.querySelectorAll(".sidetabs button").forEach((b) => b.addEventListener("click", () => showSidePanel(b.dataset.side)));
+  $("starFilter").addEventListener("change", renderTakes);
+  $("compareGrid").addEventListener("click", () => openCompareGrid());
+  $("compareWipe").addEventListener("click", () => openWipe());
+  $("compareClear").addEventListener("click", () => { S.compare = []; renderTakes(); if (!$("compare").hidden) exitCompare(); });
 
   $("sessionSelect").addEventListener("change", (e) => activateSession(e.target.value));
-  $("newSession").addEventListener("click", () => openSessionModal("new"));
-  $("duplicateSession").addEventListener("click", () => openSessionModal("duplicate"));
+  $("sessionMenuBtn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const menu = $("sessionMenu");
+    const open = menu.hidden;
+    closePopmenus(menu);
+    menu.hidden = !open;
+    $("sessionMenuBtn").setAttribute("aria-expanded", String(open));
+  });
+  $("newSession").addEventListener("click", () => { closePopmenus(); openSessionModal("new"); });
+  $("duplicateSession").addEventListener("click", () => { closePopmenus(); openSessionModal("duplicate"); });
   $("cancelSession").addEventListener("click", () => { $("sessionModal").hidden = true; });
+  $("sessionNameInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("confirmSession").click(); });
   $("deleteSession").addEventListener("click", async () => {
-    if (!confirm(`Delete session "${S.session}" and all its inputs and takes?`)) return;
-    const res = await api("/api/session/delete", { session: S.session });
-    await activateSession(res.name);
+    closePopmenus();
+    if (!confirm(`Permanently delete session "${S.session}" with all its inputs, takes, previews and timeline videos?\n\nThis cannot be undone.`)) return;
+    try {
+      const res = await api("/api/session/delete", { session: S.session });
+      await activateSession(res.name);
+    } catch (e) {
+      toast(e.message, { kind: "error" });
+    }
   });
 
   $("modelButton").addEventListener("click", () => {
@@ -1226,6 +1296,14 @@ function bindChrome() {
     $("modelModal").hidden = false;
   });
   $("cancelModel").addEventListener("click", () => { $("modelModal").hidden = true; });
+  $("recheckModel").addEventListener("click", async () => {
+    try {
+      applyModel(await api("/api/model/check", {}));
+      toast("Setup rechecked.", { kind: "ok", timeout: 2500 });
+    } catch (e) {
+      toast(e.message, { kind: "error" });
+    }
+  });
   $("saveModel").addEventListener("click", async () => {
     try {
       const info = await api("/api/model", { model: $("modelInput").value, gemma: $("gemmaInput").value });
@@ -1244,34 +1322,35 @@ function bindChrome() {
   $("fileInput").addEventListener("change", (e) => { uploadFiles([...e.target.files]); e.target.value = ""; });
 
   document.querySelectorAll("#themeSwitch button").forEach((b) => b.addEventListener("click", () => setTheme(b.dataset.theme)));
-  document.addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submit(1);
-    if (e.key === "Escape") { document.querySelectorAll(".modal").forEach((m) => { m.hidden = true; }); $("timelineReviewVideo").pause(); }
-  });
+  document.addEventListener("keydown", onGlobalKeydown);
+  document.addEventListener("click", () => closePopmenus());
+  bindTerminalResize();
 }
 
 function setTheme(theme) {
-  try { localStorage.setItem("ltxstudio-theme", theme); } catch (e) { /* storage unavailable */ }
+  safeStorage(() => localStorage.setItem("ltxstudio-theme", theme));
   if (theme === "system") delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = theme;
   document.querySelectorAll("#themeSwitch button").forEach((b) => b.classList.toggle("on", b.dataset.theme === theme));
 }
 
 async function init() {
-  let theme = "system";
-  try { theme = localStorage.getItem("ltxstudio-theme") || "system"; } catch (e) { /* storage unavailable */ }
-  setTheme(theme);
+  setTheme(safeStorage(() => localStorage.getItem("ltxstudio-theme"), null) || "system");
+  showSidePanel(safeStorage(() => localStorage.getItem("ltxstudio-side"), null) === "timeline" ? "timeline" : "takes");
   renderTaskSelect();
   bindCommon();
   bindChrome();
+  renderNotifyButton();
   syncCommonInputs();
   const cfg = await api("/api/config");
   S.sessions = cfg.sessions;
   applyModel(cfg.model);
-  if (!cfg.ffmpeg) appendLog("[studio] ffmpeg not found on PATH — frame/audio extraction, thumbnails and the timeline are disabled.", false, "failed");
   connectEvents();
   await activateSession(cfg.active);
+  if (!cfg.ffmpeg) {
+    toast("ffmpeg is not on PATH — frame/audio extraction, thumbnails and the timeline are disabled.", { kind: "error", hint: "Install it with `brew install ffmpeg` and restart the studio.", timeout: 0 });
+  }
   if (!cfg.model.configured) $("modelButton").click();
 }
 
-init().catch((e) => { console.error(e); flashError(`Failed to start: ${e.message}`); });
+init().catch((e) => { console.error(e); toast(`Failed to start: ${e.message}`, { kind: "error", timeout: 0 }); });
