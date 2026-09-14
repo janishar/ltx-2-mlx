@@ -8,6 +8,7 @@
 function setCaption(text) {
   $("viewerCaption").hidden = !text;
   $("viewerCaption").textContent = text || "";
+  $("viewerCaption").title = text || "";  // the caption is clamped to three lines
 }
 
 function closeCompare() {

@@ -201,19 +201,22 @@
   <!-- ─────────────────────────────── stage ─────────────────────────────── -->
   <section class="pane stage">
     <div class="viewer" id="viewer">
-      <video id="player" controls playsinline preload="auto"></video>
-      <img id="previewImg" class="preview-img" alt="Live preview of the in-progress render" hidden>
-      <div id="previewBadge" class="preview-badge" hidden></div>
+      <!-- media box: takes whatever height the stage has left, and everything inside fits it -->
+      <div class="viewer-media">
+        <video id="player" controls playsinline preload="auto"></video>
+        <img id="previewImg" class="preview-img" alt="Live preview of the in-progress render" hidden>
+        <div id="previewBadge" class="preview-badge" hidden></div>
+        <div class="empty" id="viewerEmpty">
+          <p>No take selected</p>
+          <span>Render something, or pick a take on the right.</span>
+        </div>
+        <div class="compare" id="compare" hidden></div>
+      </div>
       <div class="preview-scrub" id="previewScrub" hidden>
         <input type="range" id="previewSlider" min="0" max="0" value="0" aria-label="Preview step">
         <span id="previewScrubLabel"></span>
         <button class="ghost sm" id="previewClose" type="button">Back to video</button>
       </div>
-      <div class="empty" id="viewerEmpty">
-        <p>No take selected</p>
-        <span>Render something, or pick a take on the right.</span>
-      </div>
-      <div class="compare" id="compare" hidden></div>
       <div class="viewer-caption" id="viewerCaption" hidden></div>
     </div>
 

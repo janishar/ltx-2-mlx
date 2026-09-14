@@ -76,7 +76,7 @@ code { font: 400 11px var(--mono); color: var(--ink-2); }
 .pane { overflow-y: auto; min-width: 0; }
 .setup { background: var(--pane); border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow: hidden; }
 .setup-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 0 16px; }
-.stage { display: flex; flex-direction: column; padding: 16px; gap: 12px; }
+.stage { display: flex; flex-direction: column; padding: 16px; gap: 12px; min-height: 0; }
 .takes { background: var(--pane); border-left: 1px solid var(--line); display: flex; flex-direction: column; overflow-y: hidden; }
 .sidetabs { flex: 0 0 auto; display: flex; border-bottom: 1px solid var(--line); }
 .sidetabs button { flex: 1; padding: 13px 10px 11px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--ink-3); font-size: 12px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
@@ -234,14 +234,16 @@ input[type=range]:focus { outline: none; border: 0; box-shadow: none; }
 .library .delete-file:hover { color: var(--bad); border-color: var(--bad); }
 
 /* ── stage ───────────────────────────────────────────────────────── */
-.viewer { flex: 1 1 auto; min-height: 240px; display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; }
+.viewer { flex: 1 1 auto; min-height: 240px; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+/* The media box takes the height the stage has left (after the progress card, queue and terminal);
+   the player, previews and compare view fit inside it, so tall takes never spill over the cards below. */
+.viewer-media { position: relative; flex: 1 1 0; min-height: 0; width: 100%; display: flex; align-items: center; justify-content: center; overflow: hidden; }
 .viewer.comparing { min-height: 420px; }
 .compare { position: absolute; inset: 0; z-index: 6; display: flex; flex-direction: column; gap: 8px; background: var(--bg); }
 .compare-grid { flex: 1; min-height: 0; display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .compare-grid.n3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .compare-cell { margin: 0; min-height: 0; display: flex; flex-direction: column; background: #000; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
-/* .viewer video is hidden until .on — compare videos are always shown */
-.viewer .compare video { display: block; max-height: none; border-radius: 0; }
+.viewer .compare video { display: block; }
 .compare-cell video { flex: 1; min-height: 0; width: 100%; object-fit: contain; }
 .compare-cell figcaption { display: flex; align-items: center; gap: 6px; padding: 4px 6px; background: var(--pane); }
 .compare-cell figcaption .nm { flex: 1; font: 400 11px var(--mono); color: var(--ink-2); }
@@ -255,9 +257,12 @@ input[type=range]:focus { outline: none; border: 0; box-shadow: none; }
 .wipe-label { position: absolute; top: 8px; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 7px; border-radius: 4px; background: rgba(11,14,20,.8); color: #e6e4dd; font: 400 10px var(--mono); pointer-events: none; }
 .wipe-label.left { left: 8px; }
 .wipe-label.right { right: 8px; }
-.viewer video { max-width: 100%; max-height: 56vh; border-radius: 4px; background: #000; display: none; }
-.viewer video.on { display: block; }
-.viewer-caption { margin-top: 8px; font: 400 11px var(--mono); color: var(--ink-3); text-align: center; max-width: 100%; overflow-wrap: anywhere; }
+/* Absolutely positioned so its size never comes from percentage heights, which Safari does not resolve
+   for <video> inside a flexed box (the video would render at its natural height and spill over the cards). */
+#player { display: none; position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+#player.on { display: block; }
+.viewer-caption { flex: 0 0 auto; font: 400 11px/1.5 var(--mono); color: var(--ink-3); text-align: center; max-width: 100%; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .empty { text-align: center; color: var(--ink-3); }
 .empty p { margin: 0 0 4px; font-size: 13px; color: var(--ink-2); }
 .empty span { font-size: 12px; }
@@ -399,7 +404,8 @@ body.resizing { cursor: ns-resize; user-select: none; }
   .bar { flex-wrap: wrap; height: auto; min-height: 58px; padding: 8px 16px; gap: 8px 12px; }
   .barright { flex-wrap: wrap; margin-left: 0; }
   .sidepanel { max-height: 70vh; }
-  .viewer.comparing { min-height: 60vh; }
+  .viewer-media { flex: none; height: 60vh; }
+  .viewer.comparing { min-height: 0; }
   .compare-grid.n3 { grid-template-columns: 1fr; }
   .shortcuts { display: none; }
   .timeline-editor-body { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr) auto; height: 88vh; }
@@ -418,9 +424,9 @@ body.resizing { cursor: ns-resize; user-select: none; }
 .radio-group { margin-left: 22px; padding-left: 8px; border-left: 1px solid var(--line); }
 .radio-group.disabled { opacity: .4; pointer-events: none; }
 #previewOptions .fields { margin-top: 6px; }
-.preview-img { max-width: 100%; max-height: 56vh; border-radius: 4px; background: #000; object-fit: contain; }
+.preview-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
 .preview-badge { position: absolute; top: 8px; left: 8px; padding: 3px 9px; background: rgba(255,180,84,.92); color: #1f1b14; border-radius: 4px; font: 600 11px var(--mono); z-index: 5; pointer-events: none; }
-.preview-scrub { display: flex; align-items: center; gap: 10px; width: min(640px, 100%); margin-top: 8px; font: 400 11px var(--mono); color: var(--ink-3); }
+.preview-scrub { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; width: min(640px, 100%); font: 400 11px var(--mono); color: var(--ink-3); }
 .preview-scrub input[type=range] { flex: 1; margin: 0; }
 .preview-scrub span { white-space: nowrap; }
 .running-actions { margin-top: 9px; }
