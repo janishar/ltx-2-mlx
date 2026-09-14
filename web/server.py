@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import importlib.util
+import ipaddress
 import json
 import mimetypes
 import os
@@ -40,7 +41,7 @@ from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import parse_qs, unquote, urlparse
 
 WEB_DIR = Path(__file__).resolve().parent
@@ -170,6 +171,56 @@ def media_kind(name: str) -> str:
     if name.lower().endswith((".safetensors", ".yaml", ".yml", ".txt", ".json")):
         return "file"
     return mime.split("/")[0] if mime.split("/")[0] in {"image", "video", "audio"} else "file"
+
+
+def host_only(hostport: str) -> str:
+    """``host`` from a ``Host`` header value (``host:port``, ``[::1]:port`` or bare)."""
+    if hostport.startswith("["):
+        return hostport[1 : hostport.find("]")] if "]" in hostport else hostport
+    return hostport.rsplit(":", 1)[0] if hostport.count(":") == 1 else hostport
+
+
+def host_allowed(hostport: str, allowed: set[str]) -> bool:
+    """IP addresses and ``localhost`` always pass; any other name must be allowlisted (blocks DNS rebinding)."""
+    host = host_only(hostport).lower()
+    if not host:
+        return False
+    if host == "localhost" or host in allowed:
+        return True
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def request_guard(method: str, path: str, headers: Any, allowed_hosts: set[str]) -> tuple[int, str] | None:
+    """Refuse DNS-rebinding, cross-site and non-JSON state-changing requests.
+
+    There is no authentication, so this is what stops a web page you visit from
+    driving the studio: a forged POST either carries a foreign ``Origin`` or
+    cannot set a JSON content type (or ``X-Filename``) without a CORS preflight,
+    which this server never answers. Returns ``(status, message)`` to refuse, or
+    ``None`` to allow.
+    """
+    host = headers.get("Host", "")
+    if not host_allowed(host, allowed_hosts):
+        return 403, f"unrecognized Host header; start ltx studio with --allow-host {host_only(host)} to allow it"
+    if method in {"GET", "HEAD"}:
+        return None
+    origin = headers.get("Origin")
+    if origin:
+        parsed = urlparse(origin)
+        if origin == "null" or parsed.netloc.lower() != host.lower():
+            return 403, "cross-origin request refused"
+    elif headers.get("Sec-Fetch-Site") == "cross-site":
+        return 403, "cross-site request refused"
+    if urlparse(path).path == "/api/upload":
+        return None if headers.get("X-Filename") else (400, "X-Filename header is required")
+    content_type = (headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+    if content_type != "application/json":
+        return 415, "Content-Type must be application/json"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -782,6 +833,7 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "ltx-studio"
     state: State
     runner: Runner
+    allowed_hosts: ClassVar[set[str]] = set()
 
     def log_message(self, fmt: str, *args: Any) -> None:  # quiet access log
         return
@@ -792,6 +844,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -813,11 +866,22 @@ class Handler(BaseHTTPRequestHandler):
     def _session(self, params: dict[str, Any]) -> str:
         return safe_name(str(params.get("session") or self.state.active), "session-1")
 
+    def _refused(self) -> bool:
+        """Answer and return True when the request fails ``request_guard``."""
+        refusal = request_guard(self.command, self.path, self.headers, self.allowed_hosts)
+        if refusal is None:
+            return False
+        code, message = refusal
+        self._error(message, code)
+        return True
+
     # routes ---------------------------------------------------------------
     def do_HEAD(self) -> None:
         self.do_GET()
 
     def do_GET(self) -> None:
+        if self._refused():
+            return None
         url = urlparse(self.path)
         query = {k: v[0] for k, v in parse_qs(url.query).items()}
         path = url.path
@@ -867,6 +931,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(f"{type(exc).__name__}: {exc}", 500)
 
     def do_POST(self) -> None:
+        if self._refused():
+            return None
         url = urlparse(self.path)
         query = {k: v[0] for k, v in parse_qs(url.query).items()}
         path = url.path
@@ -979,6 +1045,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(end - start + 1))
         self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Content-Type-Options", "nosniff")
         if code == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.end_headers()
@@ -997,7 +1064,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _upload(self, query: dict[str, str]) -> None:
         session = self._session(query)
-        original = Path(unquote(query.get("name", "upload"))).name
+        original = Path(unquote(self.headers.get("X-Filename") or "upload")).name
         stem, suffix = os.path.splitext(original)
         dst = self.state.ensure_session(session) / "inputs" / f"{safe_name(stem, 'upload')}{suffix.lower()}"
         if dst.exists():
@@ -1053,11 +1120,15 @@ def main() -> None:
     parser.add_argument("--gemma", default=os.environ.get("LTX_GEMMA"), help="Gemma 3 repo for LTX-2.3 packs / enhance")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8720)
+    parser.add_argument(
+        "--allow-host", default="", help="extra Host names to accept, comma-separated (IPs and localhost always are)"
+    )
     args = parser.parse_args()
 
     state = State(args.model, args.gemma)
     Handler.state = state
     Handler.runner = Runner(state)
+    Handler.allowed_hosts = {h.strip().lower() for h in [args.host, *args.allow_host.split(",")] if h.strip()}
     httpd = StudioServer((args.host, args.port), Handler)
     print(f"ltx studio on http://{args.host}:{args.port}  (model: {args.model or 'not set'})", flush=True)
     if args.host not in ("127.0.0.1", "localhost", "::1"):

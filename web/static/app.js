@@ -41,7 +41,10 @@ const S = {
 // ── utilities ────────────────────────────────────────────────────────────
 
 async function api(path, body, method) {
-  const opts = body === undefined ? { method: method || "GET" } : { method: "POST", body: JSON.stringify(body) };
+  // The server refuses state-changing requests without a JSON content type (CSRF guard).
+  const opts = body === undefined
+    ? { method: method || "GET" }
+    : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
   const res = await fetch(path, opts);
   const data = await res.json().catch(() => ({}));
   if (!res.ok || (data && data.error)) throw new Error((data && data.error) || `HTTP ${res.status}`);
@@ -620,7 +623,9 @@ async function uploadFiles(files) {
   const added = [];
   for (const file of files) {
     try {
-      const res = await fetch(`/api/upload?session=${encodeURIComponent(S.session)}&name=${encodeURIComponent(file.name)}`, { method: "POST", body: file });
+      const res = await fetch(`/api/upload?session=${encodeURIComponent(S.session)}`, {
+        method: "POST", body: file, headers: { "X-Filename": encodeURIComponent(file.name) },
+      });
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || `upload failed (${res.status})`);
       added.push(data);

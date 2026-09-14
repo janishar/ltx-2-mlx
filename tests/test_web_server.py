@@ -171,3 +171,25 @@ def test_list_previews_orders_by_stage_then_step(state):
     assert info["url"] == "/sfile/session-1/previews/job/seed_1_s2_step001of003.webp"
     single = server.preview_info(directory / "seed_-5_step004of008.webp")
     assert (single["stage"], single["step"], single["total"]) == (0, 4, 8)
+
+
+def test_request_guard_blocks_rebinding_and_cross_site():
+    allowed = {"127.0.0.1", "studio.lan"}
+    guard = server.request_guard
+    json_post = {"Host": "127.0.0.1:8720", "Origin": "http://127.0.0.1:8720", "Content-Type": "application/json"}
+    assert guard("POST", "/api/render", json_post, allowed) is None
+    assert guard("GET", "/api/config", {"Host": "localhost:8720"}, allowed) is None
+    assert guard("GET", "/api/config", {"Host": "[::1]:8720"}, allowed) is None
+    assert guard("GET", "/api/config", {"Host": "studio.lan:8720"}, allowed) is None
+    assert guard("GET", "/sfile/x", {"Host": "evil.example:8720"}, allowed)[0] == 403
+    assert guard("GET", "/", {}, allowed)[0] == 403
+    assert guard("POST", "/api/render", {**json_post, "Origin": "http://evil.example"}, allowed)[0] == 403
+    assert guard("POST", "/api/render", {**json_post, "Origin": "null"}, allowed)[0] == 403
+    no_origin = {"Host": "127.0.0.1:8720", "Content-Type": "application/json"}
+    assert guard("POST", "/api/render", no_origin, allowed) is None
+    assert guard("POST", "/api/render", {**no_origin, "Sec-Fetch-Site": "cross-site"}, allowed)[0] == 403
+    # A no-cors form/fetch post can only send "simple" content types.
+    assert guard("POST", "/api/session/delete", {**json_post, "Content-Type": "text/plain"}, allowed)[0] == 415
+    assert guard("POST", "/api/session/delete", {"Host": "127.0.0.1:8720"}, allowed)[0] == 415
+    assert guard("POST", "/api/upload?session=s", {"Host": "127.0.0.1:8720"}, allowed)[0] == 400
+    assert guard("POST", "/api/upload?session=s", {"Host": "127.0.0.1:8720", "X-Filename": "a.png"}, allowed) is None
