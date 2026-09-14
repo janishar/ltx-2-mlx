@@ -14,10 +14,11 @@
 //   fields     task-specific fields (types: select, number, text, textarea,
 //              check, media, rows). `when: {key: [values]}` shows a field
 //              conditionally; media fields pick from the session's inputs.
-//   requires(v, model) -> reason string when the model can't run it, else null
-//   build(v, ctx)      -> argument list (strings, or {input: name} tokens)
+//   requires(v, model, ctx) -> reason string when the model can't run it, else null
+//   build(v, ctx)           -> argument list (strings, or {input: name} tokens)
 //
 // ctx: {frames, fps, width, height, seed, autoDuration, inputMeta(name)}
+//      (requires gets {frames, autoDuration} only)
 
 const LORA_ROWS = {
   key: "loras", label: "LoRAs", type: "rows", addLabel: "Add LoRA",
@@ -35,6 +36,9 @@ const GENERATE_ADVANCED = [
       ["two-stages-hq", "Two-stage HQ — res_2s + CFG (needs dev model)"],
       ["one-stage", "One-stage — dev + CFG at full res (needs dev model)"],
     ] },
+  { key: "generatedKeyframes", label: "Generated keyframes", type: "number", min: 0, max: 16, step: 1, placeholder: "0 = off",
+    hint: "LTX-2.5 · extra keyframes at evenly spaced interior frames sharpen fast motion; each adds one latent frame of stage-1 tokens",
+    advanced: false },
   { key: "steps", label: "Steps", type: "number", min: 1, max: 100, placeholder: "8", when: { pipeline: ["one-stage"] }, advanced: true },
   { key: "stage1Steps", label: "Stage 1 steps", type: "number", min: 1, max: 100, placeholder: "30 / 15 HQ", when: { pipeline: ["two-stage", "two-stages-hq"] }, advanced: true },
   { key: "stage2Steps", label: "Stage 2 steps", type: "number", min: 1, max: 3, placeholder: "3", when: { pipeline: ["two-stage", "two-stages-hq"] }, advanced: true },
@@ -78,14 +82,24 @@ function generateArgs(v, ctx) {
     opt(args, "--stg-scale", v.stg);
     optText(args, "--dev-transformer", v.devTransformer);
   }
+  if ((num(v.generatedKeyframes) || 0) > 0) args.push("--num-generated-keyframes", String(Math.round(num(v.generatedKeyframes))));
   flag(args, "--enhance-prompt", v.enhancePrompt);
   flag(args, "--no-audio", v.noAudio);
   loraArgs(args, v.loras);
   return args;
 }
 
-function generateRequires(v, model) {
+function generateRequires(v, model, ctx = {}) {
   if ((v.pipeline || "distilled") !== "distilled" && !model.has_dev) return "This pipeline needs the dev transformer, which the model doesn't have.";
+  const keyframes = num(v.generatedKeyframes);
+  if (keyframes !== null && keyframes !== 0) {
+    if (!Number.isInteger(keyframes) || keyframes < 0) return "Generated keyframes must be a whole number (0 turns it off).";
+    // A Hugging Face repo id isn't inspected (is_25 unknown); the CLI refuses it up front if unsupported.
+    if (model.local && !model.is_25) return "Generated keyframes need an LTX-2.5 model (this is an LTX-2.3 pack).";
+    if (!ctx.autoDuration && ctx.frames && ctx.frames < keyframes + 2) {
+      return `${keyframes} generated keyframes need at least ${keyframes + 2} frames; this clip has ${ctx.frames}.`;
+    }
+  }
   if ((v.pipeline || "distilled") === "distilled" && !model.has_distilled) return "The distilled pipeline needs the distilled transformer.";
   if (v.enhancePrompt && model.is_25) return "--enhance-prompt uses Gemma 3 and is not supported on LTX-2.5 packs.";
   if (v.teacache && model.is_25) return "TeaCache is not calibrated for LTX-2.5.";
@@ -519,3 +533,7 @@ const SIZE_PRESETS = [
   ["720p", "720p", 1280, 704],
   ["1080p", "1080p", 1920, 1088],
 ];
+
+if (typeof module !== "undefined") {
+  module.exports = { LTX_TASKS, generateArgs, generateRequires, num };
+}

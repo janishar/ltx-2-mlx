@@ -173,9 +173,10 @@ function renderField(field, values, rerender) {
         el("input", { type: "checkbox", checked: !!values[field.key], onchange: (e) => set(e.target.checked, true) }),
         field.label, field.hint ? el("em", { text: field.hint }) : null);
     case "number":
-      return el("label", { class: "field" }, label,
+      return el("label", { class: `field${field.hint ? " full" : ""}` }, label,
         el("input", { type: "number", value: values[field.key] ?? "", step: field.step ?? "any", min: field.min, max: field.max,
-          placeholder: field.placeholder ?? "", oninput: (e) => set(e.target.value === "" ? "" : Number(e.target.value)) }));
+          placeholder: field.placeholder ?? "", oninput: (e) => set(e.target.value === "" ? "" : Number(e.target.value)) }),
+        field.hint ? el("em", { class: "field-hint", text: field.hint }) : null);
     case "text":
       return el("label", { class: "field" }, label,
         el("input", { type: "text", value: values[field.key] ?? "", placeholder: field.placeholder ?? "", spellcheck: false,
@@ -234,9 +235,15 @@ function renderRows(field, values, rerender) {
   return wrap;
 }
 
+/** What task.requires() may check beyond the task values: the clip length, unless auto duration decides it. */
+function requiresContext(task) {
+  const auto = (task.blocks || {}).duration === "auto" && S.common.autoDuration;
+  return { frames: S.common.frames, autoDuration: auto };
+}
+
 function renderAvailability() {
   const task = TASKS[S.taskId];
-  const reason = S.model.configured ? task.requires(taskValues(), S.model) : "No model configured — click Model in the top bar.";
+  const reason = S.model.configured ? task.requires(taskValues(), S.model, requiresContext(task)) : "No model configured — click Model in the top bar.";
   $("taskUnavailable").hidden = !reason;
   $("taskUnavailable").textContent = reason || "";
 }
@@ -430,7 +437,7 @@ function collectErrors(task, v) {
   };
   checkFields(task.fields, v);
   if (blocks.canvas && (S.common.width % 32 || S.common.height % 32)) errors.push("Width and height must be multiples of 32.");
-  const reason = S.model.configured ? task.requires(v, S.model) : "No model configured.";
+  const reason = S.model.configured ? task.requires(v, S.model, requiresContext(task)) : "No model configured.";
   if (reason) errors.push(reason);
   return errors;
 }
@@ -494,6 +501,7 @@ function refreshPreview() {
   $("renderBtn").disabled = errors.length > 0;
   $("queueSeedsBtn").disabled = errors.length > 0 || !(task.blocks && task.blocks.seed);
   $("errors").hidden = true;
+  renderAvailability();  // requires() can depend on non-structural values (frames, generated keyframes)
   refreshEstimate(req.params);
 }
 

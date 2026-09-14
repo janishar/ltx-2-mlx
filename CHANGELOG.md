@@ -29,7 +29,8 @@ for per-pipeline stability guarantees.
 - **Generated keyframe slots** (`generate --num-generated-keyframes N`, LTX-2.5),
   synced from upstream ltx-2-mlx 0.15.5: N evenly spaced single-pixel-frame slots
   denoised with stage 1, on all four generate modes; refused before any Gemma load
-  on packs without `use_keyframes_abs_pos_embedding`.
+  on packs without `use_keyframes_abs_pos_embedding`. ltx studio exposes it as
+  **Generated keyframes** on the generate tasks.
 
 ### Changed
 

@@ -112,6 +112,7 @@ input[type=number] { font-family: var(--mono); }
 .fields.three { grid-template-columns: repeat(3, 1fr); }
 .fields label, .labelfield, .field { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--ink-3); }
 .field.full { grid-column: 1 / -1; }
+.field-hint { font-style: normal; font-size: 10px; color: var(--ink-3); line-height: 1.4; }
 .labelfield { margin-top: 9px; }
 .seedrow { display: flex; gap: 5px; }
 .seedrow input { flex: 1; }

@@ -71,6 +71,12 @@ a sample path — edit it in `.vscode/launch.json`, or use "custom paths".
    sampler knobs, LoRAs, quantize-on-load, low-RAM streaming, tiling and extra
    raw arguments. **Command** shows the exact `ltx-2-mlx` invocation.
    **History ▾** under the prompt brings back any prompt this session's takes used.
+   The generate tasks also offer **Generated keyframes** for LTX-2.5 models
+   (`--num-generated-keyframes`): extra keyframes at evenly spaced interior frames
+   that the model generates with stage 1 to keep fast motion sharp. Each costs one
+   latent frame of stage-1 tokens; 0 (the default) turns it off. The option is
+   refused with an explanation on LTX-2.3 packs or when the clip has fewer than
+   N + 2 frames.
 4. **Render** (or ⌘/Ctrl+Enter) queues the job; **Queue 3 seeds** (⇧⌘/Ctrl+Enter)
    queues three random seeds and opens them side by side when they finish (see
    [Comparing takes](#comparing-takes)). Both sit in the render bar pinned to the

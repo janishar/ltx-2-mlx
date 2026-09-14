@@ -230,7 +230,7 @@ def request_guard(method: str, path: str, headers: Any, allowed_hosts: set[str])
 # ---------------------------------------------------------------------------
 
 #: Task values that change how much work a render does (compared exactly for estimates).
-WORKLOAD_VALUE = re.compile(r"steps|pipeline|teacache|topology|skipStage2|^mode$|^cfg$|^stg$", re.IGNORECASE)
+WORKLOAD_VALUE = re.compile(r"steps|pipeline|teacache|topology|skipStage2|keyframes|^mode$|^cfg$|^stg$", re.IGNORECASE)
 
 
 def workload(params: dict[str, Any]) -> dict[str, Any] | None:
