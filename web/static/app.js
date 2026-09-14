@@ -19,6 +19,9 @@ const S = {
   values: {},
   common: {
     prompt: "", width: 704, height: 448, frames: 49, fps: 24,
+    // Canvas sizing: a named ratio ("16:9"), "input" (match the task's input
+    // media) or "custom" (customRatio); megapixels is the target size.
+    aspect: "custom", customRatio: 704 / 448, megapixels: 0.32,
     autoDuration: false, autoMin: 1, autoMax: 8, seed: 42,
     quantize: "8", lowRam: false, tileFrames: 1, tileSpatial: 1, tileOverlap: 2,
     extraArgs: "", takeName: "",
@@ -151,7 +154,8 @@ function renderTask() {
     advanced.length ? el("div", { class: "taskgrid" }, advanced.map((f) => renderField(f, v, () => renderTask()))) : "",
   );
   renderAvailability();
-  renderCanvasWarn();
+  fitCanvas();
+  renderCanvas();
   renderPreviewOptions();
   refreshPreview();
 }
@@ -270,15 +274,118 @@ function renderAvailability() {
   $("taskUnavailable").textContent = reason || "";
 }
 
-function renderCanvasWarn() {
+// ── canvas sizing (helpers in canvas.js) ─────────────────────────────────
+
+function currentGrid() {
+  return canvasGrid(TASKS[S.taskId].cmd, taskValues().pipeline || "distilled");
+}
+
+/** Size of the first image/video the task has selected, or null. */
+function inputAspect() {
   const task = TASKS[S.taskId];
-  const { width, height } = S.common;
+  const v = taskValues();
+  const sized = (name) => {
+    const p = name ? inputMeta(name) : {};
+    return p.width && p.height ? { ratio: p.width / p.height, width: p.width, height: p.height } : null;
+  };
+  for (const f of task.fields) {
+    if (f.type === "media" && f.accept !== "audio" && sized(v[f.key])) return sized(v[f.key]);
+    if (f.type === "rows") {
+      const media = f.itemFields.filter((i) => i.type === "media" && i.accept !== "audio");
+      for (const row of v[f.key] || []) for (const i of media) if (sized(row[i.key])) return sized(row[i.key]);
+    }
+  }
+  return null;
+}
+
+function canvasRatio() {
+  const c = S.common;
+  if (c.aspect === "input") {
+    const a = inputAspect();
+    if (a) return a.ratio;
+  }
+  return aspectRatioFor(c.aspect) || c.customRatio || c.width / c.height;
+}
+
+function syncCanvasInputs() {
+  $("width").value = S.common.width;
+  $("height").value = S.common.height;
+}
+
+/** Re-solve width/height from the ratio and megapixel target on the current grid. */
+function solveCurrentCanvas() {
+  const c = S.common;
+  const solved = solveCanvas(canvasRatio(), c.megapixels, currentGrid());
+  if (!solved || (solved.width === c.width && solved.height === c.height)) return false;
+  c.width = solved.width;
+  c.height = solved.height;
+  syncCanvasInputs();
+  return true;
+}
+
+/** Keep the canvas legal for the current task: re-solve ratio-driven sizes, snap custom ones. */
+function fitCanvas() {
+  const task = TASKS[S.taskId];
+  if (!(task.blocks && task.blocks.canvas)) return;
+  const c = S.common;
+  const grid = currentGrid();
+  let changed = false;
+  // "Match input" with no sized input yet (nothing picked, or inputs still loading) keeps the size.
+  const ratioDriven = c.aspect !== "custom" && (c.aspect !== "input" || inputAspect());
+  if (ratioDriven) changed = solveCurrentCanvas();
+  else if (c.width % grid || c.height % grid) {
+    c.width = snapDimension(c.width, grid);
+    c.height = snapDimension(c.height, grid);
+    syncCanvasInputs();
+    changed = true;
+  }
+  if (changed) saveSettings();
+}
+
+/** Take explicit dimensions (preset, typed size, restored take) and derive ratio + megapixels. */
+function setCanvasDims(width, height) {
+  const c = S.common;
+  c.width = width;
+  c.height = height;
+  c.aspect = matchAspect(width, height, 0.005) || "custom";
+  c.customRatio = width / height;
+  c.megapixels = clampMegapixels((width * height) / 1e6);
+  syncCanvasInputs();
+}
+
+function renderCanvas() {
+  const task = TASKS[S.taskId];
+  const c = S.common;
+  const { width, height } = c;
+  const grid = currentGrid();
+  const input = inputAspect();
+
+  const customRatio = c.aspect === "custom" && c.customRatio ? c.customRatio : width / height;
+  const options = [el("option", { value: "custom", text: `Custom · ${customRatio.toFixed(3)}` })];
+  if (input || c.aspect === "input") {
+    options.push(el("option", { value: "input", text: input ? `Match input · ${input.width}×${input.height}` : "Match input (none selected)" }));
+  }
+  for (const [key, label] of ASPECT_RATIOS) options.push(el("option", { value: key, text: label }));
+  $("aspectSelect").replaceChildren(...options);
+  $("aspectSelect").value = c.aspect;
+
+  $("megapixels").value = String(c.megapixels);
+  $("megapixelsValue").textContent = `${Number(c.megapixels).toFixed(2)} MP`;
+  $("resolvedDimensions").textContent = `${width} × ${height}`;
+  $("actualMegapixels").textContent = `${((width * height) / 1e6).toFixed(2)} MP`;
+  $("actualRatio").textContent = height ? (width / height).toFixed(3) : "–";
+  $("latentSize").textContent = `${Math.floor(width / 32)} × ${Math.floor(height / 32)}`;
+  $("canvasGridLabel").textContent = `×${grid} grid`;
+  $("canvasGridLabel").title = grid === 64
+    ? "Two-stage pipelines render half size first, so sizes step in multiples of 64"
+    : "One-stage renders at full size, so sizes step in multiples of 32";
+  $("width").step = $("height").step = $("width").min = $("height").min = String(grid);
+
   let message = "";
   if (task.blocks && task.blocks.canvas) {
-    if (width % 32 || height % 32) message = "Width and height must be multiples of 32.";
-    else if (["generate", "a2v", "keyframe", "ic-lora", "hdr-ic-lora"].includes(task.cmd) && (width % 64 || height % 64))
-      message = "Two-stage pipelines render half size first — non-multiples of 64 snap down.";
-    else if (width * height > 1920 * 1088) message = "Beyond 1080p memory grows fast — consider tiling in Advanced.";
+    if (width % grid || height % grid) message = `Width and height snap to multiples of ${grid} for this pipeline.`;
+    else if (width * height > CANVAS_MAX_PIXELS) message = "Beyond 1080p memory grows fast — consider tiling in Advanced.";
+    else if (width * height > 1280 * 704) message = "Above 720p, memory grows quickly with duration — keep clips short or enable tiling.";
   }
   $("sizeWarn").hidden = !message;
   $("sizeWarn").textContent = message;
@@ -431,6 +538,7 @@ function restore(settings) {
   if (settings.common) {
     const preview = { ...S.common.preview, ...(settings.common.preview || {}) };
     Object.assign(S.common, settings.common, { preview });
+    if (!settings.common.aspect) setCanvasDims(S.common.width, S.common.height);
   }
   if (settings.values) S.values = { ...S.values, ...settings.values };
   syncCommonInputs();
@@ -1036,8 +1144,27 @@ function bindCommon() {
     refreshPreview();
     saveSettings();
   });
-  bindNum("width", "width", renderCanvasWarn);
-  bindNum("height", "height", renderCanvasWarn);
+  bindNum("width", "width", renderCanvas);
+  bindNum("height", "height", renderCanvas);
+  for (const id of ["width", "height"]) {
+    $(id).addEventListener("change", () => {
+      const grid = currentGrid();
+      setCanvasDims(snapDimension(c.width, grid), snapDimension(c.height, grid));
+      renderCanvas(); refreshPreview(); saveSettings();
+    });
+  }
+  $("megapixels").addEventListener("input", (e) => {
+    c.megapixels = clampMegapixels(Number(e.target.value));
+    solveCurrentCanvas();
+    renderCanvas(); refreshPreview(); saveSettings();
+  });
+  $("aspectSelect").addEventListener("change", (e) => {
+    c.aspect = e.target.value;
+    // Custom keeps the current size and locks its ratio for the megapixel slider.
+    if (c.aspect === "custom") c.customRatio = c.width / c.height;
+    else solveCurrentCanvas();
+    renderCanvas(); refreshPreview(); saveSettings();
+  });
   bindNum("fps", "fps", renderDuration);
   bindNum("seed", "seed");
   bindNum("autoMin", "autoMin");
@@ -1063,7 +1190,7 @@ function bindCommon() {
 
   $("sizePresets").replaceChildren(...SIZE_PRESETS.map(([id, label, w, h]) => el("button", {
     type: "button", "data-w": String(w), "data-h": String(h), text: `${label} ${w}×${h}`,
-    onclick: () => { c.width = w; c.height = h; $("width").value = w; $("height").value = h; renderCanvasWarn(); refreshPreview(); saveSettings(); },
+    onclick: () => { setCanvasDims(w, h); renderCanvas(); refreshPreview(); saveSettings(); },
   })));
 }
 

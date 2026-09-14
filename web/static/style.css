@@ -324,3 +324,12 @@ input[type=range]:focus { outline: none; border: 0; box-shadow: none; }
 .preview-scrub span { white-space: nowrap; }
 .running-actions { margin-top: 9px; }
 .running-actions button { margin-top: 0; }
+
+/* ── canvas sizing ───────────────────────────────────────────────── */
+.resolution-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: end; }
+.size-select, .resolution-stat { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 11px; color: var(--ink-3); }
+.resolution-stat output { color: var(--ink-2); font: 400 11px var(--mono); }
+.resolution-stat input[type=range]:disabled { opacity: .45; }
+.canvas-readout { display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px 10px; margin-top: 11px; color: var(--ink-3); font-size: 10px; }
+.canvas-readout b { color: var(--ink-2); font: 400 11px var(--mono); }
+.canvas-presets { margin-top: 11px; }

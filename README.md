@@ -292,7 +292,9 @@ dataset preprocessing and LoRA training. Every video comes with synchronized
 **A studio, not a command line.** ltx studio renders a form for each task from
 a declarative catalog (`web/static/tasks.js`), checks inputs before launch,
 shows the exact command, and greys out tasks the loaded model can't run (dev
-transformer missing, IC-LoRA on LTX-2.5) with the reason. Renders queue one at
+transformer missing, IC-LoRA on LTX-2.5) with the reason. Canvas size is
+picked by aspect ratio (or the input's) and megapixels, solved onto the ×64
+(two-stage) or ×32 (one-stage) grid LTX requires. Renders queue one at
 a time with live phase, denoising-step progress, elapsed time, Stop, and a
 streaming terminal. **Queue 3 seeds** is the cheapest way to judge a prompt.
 

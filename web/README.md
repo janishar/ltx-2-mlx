@@ -58,8 +58,8 @@ a sample path — edit it in `.vscode/launch.json`, or use "custom paths".
 2. Drop or browse **inputs** (images, videos, audio). They land in the
    session's `inputs/`; click one to fill the next empty slot of the task, or
    pick it from a slot's menu.
-3. Fill in the prompt, canvas (presets up to 1080p), duration on the 8k+1 frame
-   grid (or LTX-2.5 auto duration), seed, and task options. **Advanced** holds
+3. Fill in the prompt, canvas (see [Canvas size](#canvas-size)), duration on
+   the 8k+1 frame grid (or LTX-2.5 auto duration), seed, and task options. **Advanced** holds
    sampler knobs, LoRAs, quantize-on-load, low-RAM streaming, tiling and extra
    raw arguments. **Command** shows the exact `ltx-2-mlx` invocation.
 4. **Render** (or ⌘/Ctrl+Enter) queues the job; **Queue 3 seeds** queues three
@@ -72,6 +72,28 @@ a sample path — edit it in `.vscode/launch.json`, or use "custom paths".
    **Reuse settings**, **Chain →** (last frame becomes the start image of
    Image → Video), pull its first/last frame, the video itself (for retake,
    extend or control) or its audio (for audio → video) into inputs.
+
+## Canvas size
+
+Pick an **aspect ratio** and drag **Megapixels** (0.1–2.1 MP); the studio
+solves the closest legal width × height. LTX needs sizes on a pixel grid:
+two-stage pipelines (distilled, two-stage, HQ, audio → video, keyframe,
+IC-LoRA, lip dub) render stage 1 at half size, so their sizes step in
+multiples of **64**; `generate` with the one-stage pipeline renders at full
+size and steps in multiples of **32**. Switching pipeline re-fits the size to
+the new grid.
+
+- **Aspect ratio** — 16:9, 9:16, 1:1, 4:3, 3:4, 3:2, 2:3, 21:9; **Match
+  input** uses the task's selected image or video; **Custom** keeps the current
+  size and locks its ratio for the slider.
+- **Readout** — resolved size, actual megapixels and ratio (the grid can shift
+  the ratio a few percent), latent size (width/32 × height/32) and the grid.
+- **Presets and Width/Height** — preset chips and typed sizes still work;
+  typed values snap to the grid when you leave the field, and the aspect and
+  megapixel controls follow.
+
+Above 720p (0.9 MP) memory grows quickly with duration; beyond 1080p consider
+tiling in **Advanced**.
 
 ## Live preview
 
