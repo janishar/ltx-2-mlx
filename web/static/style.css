@@ -75,7 +75,7 @@ code { font: 400 11px var(--mono); color: var(--ink-2); }
 .grid { display: grid; grid-template-columns: 470px minmax(0, 1fr) 340px; height: calc(100% - 58px); }
 .pane { overflow-y: auto; min-width: 0; }
 .setup { background: var(--pane); border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow: hidden; }
-.setup-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 0 16px; }
+.setup-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 4px 0 16px; }
 .stage { display: flex; flex-direction: column; padding: 16px; gap: 12px; min-height: 0; }
 .takes { background: var(--pane); border-left: 1px solid var(--line); display: flex; flex-direction: column; overflow-y: hidden; }
 .sidetabs { flex: 0 0 auto; display: flex; border-bottom: 1px solid var(--line); }
@@ -221,8 +221,8 @@ input[type=range]:focus { outline: none; border: 0; box-shadow: none; }
 .drop.over { border-color: var(--amber); background: rgba(255,180,84,.06); }
 .drop p { margin: 0 0 6px; font-size: 12px; color: var(--ink-3); }
 .drop .browse { display: inline-block; padding: 3px 10px; border: 1px solid var(--line-hi); border-radius: var(--r); cursor: pointer; font-size: 11px; color: var(--ink-2); }
-.library { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-top: 10px; }
-.library figure { margin: 0; cursor: pointer; position: relative; }
+.library { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; margin-top: 10px; max-height: 320px; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
+.library figure { margin: 0; cursor: pointer; position: relative; min-width: 0; }
 .library .thumb { width: 100%; aspect-ratio: 1; overflow: hidden; border-radius: 4px; border: 1px solid var(--line); background: var(--bg); display: flex; align-items: flex-start; }
 .library .thumb img, .library .thumb video { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
 .library .thumb .glyph { padding: 5px; font: 400 9px var(--mono); color: var(--ink-3); overflow-wrap: anywhere; }
