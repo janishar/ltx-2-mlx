@@ -310,11 +310,21 @@ across every session, click to queue (repeats allowed), drag to reorder, and
 and silent clips get silence so the soundtrack stays continuous. Results land
 in the session's `timeline/` with a sidecar listing the source clips.
 
+**Live preview (optional).** Tick **Live preview** under the Render button and
+the studio streams short animated WebP previews into the viewer while the model
+denoises, so a bad composition or broken motion shows up at step 2 instead of
+after the full render. You choose how often (every N steps; the last step is
+always shown), how long a clip (a still frame, or 17 / 57 / 121 frames) and
+where in the video (start, middle, end or a frame index). Each preview is
+labelled with its step and stage. Once the take finishes, **Previews (N)**
+lets you scrub back through how it formed. It costs a VAE decode per preview
+and keeps the decoder in memory, so it is off by default. Supported by text,
+image and audio → video, retake, extend, keyframe and the IC-LoRA tasks.
+From the CLI the same previews come from `--stepwise-image-output-dir`.
+
 **Memory tools.** `--low-ram` streams transformer blocks from a converted pack
 (q8 on 16 GB, bf16 on 32 GB). `--tile-frames` / `--tile-spatial` split
-attention for long or HD clips. `--stepwise-image-output-dir` writes short
-animated previews while denoising, so motion problems show at step 4 instead of
-minute 15.
+attention for long or HD clips.
 
 ## Sessions and state
 
@@ -325,6 +335,7 @@ web/sessions/<name>/
 ├── setting.json   # task, prompt and every form value — saved as you edit
 ├── inputs/        # uploads, extracted frames/audio, takes reused as inputs
 ├── outputs/       # rendered takes (.mp4) with a .json sidecar: params, argv, probe
+├── previews/      # live-preview WebPs, one folder per render, deleted with its take
 └── timeline/      # combined videos with a .json sidecar listing source clips
 ```
 

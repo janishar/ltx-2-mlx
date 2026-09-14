@@ -310,3 +310,17 @@ input[type=range]:focus { outline: none; border: 0; box-shadow: none; }
   .timeline-browser, .timeline-queue { border-right: 0; border-bottom: 1px solid var(--line); }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* ── live preview (follows h3 studio) ───────────────────────────────── */
+.group-divider { display: flex; align-items: center; gap: 8px; margin-top: 14px; color: var(--ink-3); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+.group-divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.radio-group { margin-left: 22px; padding-left: 8px; border-left: 1px solid var(--line); }
+.radio-group.disabled { opacity: .4; pointer-events: none; }
+#previewOptions .fields { margin-top: 6px; }
+.preview-img { max-width: 100%; max-height: 56vh; border-radius: 4px; background: #000; object-fit: contain; }
+.preview-badge { position: absolute; top: 8px; left: 8px; padding: 3px 9px; background: rgba(255,180,84,.92); color: #1f1b14; border-radius: 4px; font: 600 11px var(--mono); z-index: 5; pointer-events: none; }
+.preview-scrub { display: flex; align-items: center; gap: 10px; width: min(640px, 100%); margin-top: 8px; font: 400 11px var(--mono); color: var(--ink-3); }
+.preview-scrub input[type=range] { flex: 1; margin: 0; }
+.preview-scrub span { white-space: nowrap; }
+.running-actions { margin-top: 9px; }
+.running-actions button { margin-top: 0; }

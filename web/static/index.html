@@ -126,6 +126,29 @@
 
     <div class="block">
       <label class="labelfield">Take name<input type="text" id="takeName" placeholder="shot-01" autocomplete="off"></label>
+      <div id="previewOptions">
+        <label class="check"><input type="checkbox" id="previewEnabled"> Live preview<em>decode a short clip while denoising — slower, more memory</em></label>
+        <div class="radio-group" id="previewSettings">
+          <div class="fields three">
+            <label>Every N steps<input type="number" id="previewInterval" min="1" max="100" value="1"></label>
+            <label>Clip length<select id="previewFrames">
+              <option value="1">Still frame</option>
+              <option value="3">Short · 17 frames</option>
+              <option value="8">Default · 57 frames</option>
+              <option value="16">Long · 121 frames</option>
+            </select></label>
+            <label>Position<select id="previewPosition">
+              <option value="middle">Middle</option>
+              <option value="start">Start</option>
+              <option value="end">End</option>
+              <option value="custom">Custom…</option>
+            </select></label>
+          </div>
+          <label class="labelfield" id="previewFrameField" hidden>Centre latent frame (negative counts from the end)<input type="number" id="previewFrame" value="0" min="-512" max="512"></label>
+          <p class="hint" id="previewCost"></p>
+        </div>
+      </div>
+      <div class="group-divider">Render</div>
       <div class="actions render-actions">
         <button class="go" id="renderBtn" type="button">Render</button>
         <button class="ghost" id="queueSeedsBtn" type="button">Queue 3 seeds</button>
@@ -139,6 +162,13 @@
   <section class="pane stage">
     <div class="viewer">
       <video id="player" controls playsinline preload="auto"></video>
+      <img id="previewImg" class="preview-img" alt="Live preview of the in-progress render" hidden>
+      <div id="previewBadge" class="preview-badge" hidden></div>
+      <div class="preview-scrub" id="previewScrub" hidden>
+        <input type="range" id="previewSlider" min="0" max="0" value="0" aria-label="Preview step">
+        <span id="previewScrubLabel"></span>
+        <button class="ghost sm" id="previewClose" type="button">Back to video</button>
+      </div>
       <div class="empty" id="viewerEmpty">
         <p>No take selected</p>
         <span>Render something, or pick a take on the right.</span>
@@ -150,7 +180,10 @@
       <div class="phase"><span id="phaseName">starting</span><b id="phasePct"></b></div>
       <div class="track"><i id="phaseBar"></i></div>
       <div class="elapsed" id="elapsed"></div>
-      <button class="ghost sm" id="stopBtn" type="button">Stop</button>
+      <div class="actions running-actions">
+        <button class="ghost sm" id="stopBtn" type="button">Stop</button>
+        <button class="ghost sm" id="followPreviewBtn" type="button" hidden>Show live preview</button>
+      </div>
     </div>
 
     <div class="queue" id="queueWrap" hidden>

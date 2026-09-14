@@ -66,10 +66,41 @@ a sample path — edit it in `.vscode/launch.json`, or use "custom paths".
    random seeds. One job runs at a time; the stage shows the phase, denoising
    step progress, elapsed time and a **Stop** button, and the terminal streams
    the live log.
-5. Every take appears on the right with its settings. From a take you can
+5. Optionally tick **Live preview** before rendering to watch the video take
+   shape — see [Live preview](#live-preview).
+6. Every take appears on the right with its settings. From a take you can
    **Reuse settings**, **Chain →** (last frame becomes the start image of
    Image → Video), pull its first/last frame, the video itself (for retake,
    extend or control) or its audio (for audio → video) into inputs.
+
+## Live preview
+
+Off by default. Tick **Live preview** (above the Render button) to have the
+pipeline decode a short animated WebP of the current latent while it denoises;
+each one appears in the viewer as soon as it is written, with a badge showing
+its step and stage (e.g. `Preview step 3/8 · stage 1`). Available for
+generate, audio → video, retake, extend, keyframe, IC-LoRA, HDR and lip dub;
+the option hides for other tasks.
+
+| Setting | CLI flag | Effect |
+| --- | --- | --- |
+| **Every N steps** | `--stepwise-interval` | Preview every N denoising steps (1–100). The final step of each stage is always previewed. |
+| **Clip length** | `--stepwise-frames` | Latent frames to decode: **Still frame** (1), **Short** (3 → 17 frames), **Default** (8 → 57 frames), **Long** (16 → 121 frames). Longer clips show more motion but decode slower. |
+| **Position** | `--stepwise-frame` | Which part of the video the clip is centred on: **Middle**, **Start**, **End**, or **Custom** latent frame index (negative counts from the end). |
+
+The hint under the settings shows the resulting cost. Each preview runs a VAE
+decode, and the decoder stays loaded for the whole render, so expect a slower
+render and higher peak memory. With `--low-ram` most of the memory saving is
+lost. Image quality is fixed by the pipeline (WebP quality 90) and is not
+adjustable.
+
+While a job runs, clicking another take stops the viewer following the render;
+**Show live preview** in the progress panel switches back. When the take is
+done the viewer switches to the finished video, and the take gains
+**Previews (N)**: a slider through every preview in order, with
+**Back to video** to return. Previews live in `previews/<job>/`. They are
+deleted with their take, and also when the job fails, is stopped, or produced
+none.
 
 ## Timeline
 
@@ -97,7 +128,8 @@ back into inputs with **Use video** (e.g. to extend it).
 web/sessions/<name>/
   setting.json   task, prompt and all form values — saved as you edit
   inputs/        uploads, extracted frames/audio, takes reused as inputs
-  outputs/       rendered .mp4 takes, each with a .json sidecar (params, argv, probe)
+  outputs/       rendered .mp4 takes, each with a .json sidecar (params, argv, probe, previews)
+  previews/      live-preview WebPs, one folder per render
   timeline/      combined videos, each with a .json sidecar (source clips, probe)
 ```
 

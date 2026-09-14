@@ -12,6 +12,7 @@ Sessions are plain directories:
         setting.json   UI state, saved while you edit
         inputs/        uploads and media pulled back from takes
         outputs/       rendered .mp4 takes, each with a .json sidecar
+        previews/      optional live-preview clips per render (animated WebP per step)
         timeline/      combined videos from the timeline editor, each with a .json sidecar
 
 Usage:
@@ -55,7 +56,10 @@ ALLOWED_COMMANDS = {
 MODEL_COMMANDS = ALLOWED_COMMANDS - {"enhance", "slice", "train"}
 GEMMA_COMMANDS = MODEL_COMMANDS - {"info"} | {"enhance"}
 QUANTIZE_COMMANDS = {"generate", "a2v", "retake", "extend", "keyframe", "ic-lora", "hdr-ic-lora", "lipdub"}
-SERVER_OWNED_FLAGS = {"--output", "-o", "--model", "-m", "--gemma", "--quantize-on-load"}
+SERVER_OWNED_FLAGS = {"--output", "-o", "--model", "-m", "--gemma", "--quantize-on-load", "--stepwise-image-output-dir"}
+#: Subcommands whose pipelines accept the --stepwise-* live preview flags.
+STEPWISE_COMMANDS = {"generate", "a2v", "retake", "extend", "keyframe", "ic-lora", "hdr-ic-lora", "lipdub"}
+PREVIEW_NAME = re.compile(r"^seed_-?\d+(?:_s(\d+))?_step(\d+)of(\d+)\.webp$")
 
 MEDIA_KINDS = {"inputs", "outputs", "timeline"}
 VIDEO_EXTS = {".mp4", ".mov"}
@@ -312,7 +316,8 @@ class Runner:
 
     def summary(self, job: dict[str, Any]) -> dict[str, Any]:
         keys = ("id", "session", "task_id", "label", "status", "created", "started", "finished",
-                "elapsed", "output", "returncode", "progress", "seed", "argv_display", "error")  # fmt: skip
+                "elapsed", "output", "returncode", "progress", "seed", "argv_display", "error",
+                "preview_latest", "preview_count")  # fmt: skip
         return {k: job.get(k) for k in keys}
 
     def queue_state(self) -> list[dict[str, Any]]:
@@ -321,7 +326,7 @@ class Runner:
             return [self.summary(self.jobs[i]) for i in ids if i in self.jobs]
 
     # submission -----------------------------------------------------------
-    def build_argv(self, req: dict[str, Any]) -> tuple[list[str], Path | None, Path]:
+    def build_argv(self, req: dict[str, Any], job_id: str | None = None) -> tuple[list[str], Path | None, Path]:
         subcommand = req.get("subcommand")
         if subcommand not in ALLOWED_COMMANDS:
             raise ValueError(f"unsupported command: {subcommand!r}")
@@ -356,6 +361,8 @@ class Runner:
             argv += ["--gemma", self.state.gemma]
         if subcommand in QUANTIZE_COMMANDS and req.get("quantize") in {"8", "4", "none"}:
             argv += ["--quantize-on-load", req["quantize"]]
+        if subcommand in STEPWISE_COMMANDS and isinstance(req.get("preview"), dict):
+            argv += preview_args(req["preview"], session / "previews" / (job_id or uuid.uuid4().hex[:10]))
 
         output: Path | None = None
         kind = req.get("output", "mp4")
@@ -370,9 +377,13 @@ class Runner:
         return argv, output, session
 
     def submit(self, req: dict[str, Any]) -> dict[str, Any]:
-        argv, output, session = self.build_argv(req)
+        job_id = uuid.uuid4().hex[:10]
+        argv, output, session = self.build_argv(req, job_id)
+        preview_dir = session / "previews" / job_id if "--stepwise-image-output-dir" in argv else None
         job = {
-            "id": uuid.uuid4().hex[:10],
+            "id": job_id,
+            "preview_dir": str(preview_dir) if preview_dir else None,
+            "preview_count": 0,
             "session": session.name,
             "task_id": req.get("task_id"),
             "label": req.get("label") or req.get("task_id"),
@@ -398,6 +409,8 @@ class Runner:
             if job_id in self.pending:
                 self.pending.remove(job_id)
                 self.jobs[job_id]["status"] = "cancelled"
+                if self.jobs[job_id].get("preview_dir"):
+                    shutil.rmtree(self.jobs[job_id]["preview_dir"], ignore_errors=True)
                 self.emit(
                     "queue",
                     [self.summary(self.jobs[i]) for i in ([self.current] if self.current else []) + self.pending],
@@ -422,6 +435,8 @@ class Runner:
             except Exception as exc:
                 job = self.jobs[job_id]
                 job["status"], job["error"] = "failed", str(exc)
+                if job.get("preview_dir"):
+                    shutil.rmtree(job["preview_dir"], ignore_errors=True)
                 self.emit("log", {"line": f"[studio] job failed to start: {exc}", "replace": False})
             finally:
                 with self.cond:
@@ -443,8 +458,16 @@ class Runner:
             start_new_session=True,
         )  # fmt: skip
         tail: list[str] = []
+        watcher_stop = threading.Event()
+        watcher = None
+        if job.get("preview_dir"):
+            watcher = threading.Thread(target=self._watch_previews, args=(job, watcher_stop), daemon=True)
+            watcher.start()
         self._pump(job, self.proc.stdout, tail)  # type: ignore[arg-type]
         returncode = self.proc.wait()
+        if watcher is not None:
+            watcher_stop.set()
+            watcher.join(timeout=5)
         job["elapsed"] = round(time.monotonic() - started, 1)
         job["finished"], job["returncode"] = now_iso(), returncode
         cancelled = job["status"] == "cancelling"
@@ -457,20 +480,45 @@ class Runner:
         else:
             job["status"] = "failed"
             job["error"] = next((line for line in reversed(tail) if line.strip()), f"exit code {returncode}")
+        preview_dir = Path(job["preview_dir"]) if job.get("preview_dir") else None
+        previews = list_previews(preview_dir) if preview_dir else []
         if job["output_kind"] == "mp4" and produced and output is not None:
             sidecar = {
                 "task_id": job["task_id"], "label": job["label"], "created": job["created"],
                 "elapsed": job["elapsed"], "seed": job.get("seed"), "params": job["params"],
                 "argv": job["argv"], "probe": ffprobe(output),
             }  # fmt: skip
+            if previews and preview_dir is not None:
+                sidecar["previews"] = [_rel(p) for p in previews]
+                sidecar["preview_dir"] = _rel(preview_dir)
             write_json(output.with_suffix(".json"), sidecar)
             self.emit("takes", {"session": job["session"]})
+        if preview_dir is not None and (job["status"] != "done" or not previews):
+            # Nothing owns these previews (no take, or none were written) — don't leave orphans.
+            shutil.rmtree(preview_dir, ignore_errors=True)
         elif job["output_kind"] == "dir" and produced:
             self.emit("takes", {"session": job["session"]})
         state = job["status"]
         self.emit(
             "log", {"line": f"[studio] {job['label']}: {state} in {job['elapsed']}s", "replace": False, "kind": state}
         )
+
+    def _watch_previews(self, job: dict[str, Any], stop: threading.Event) -> None:
+        """Push each new stepwise preview to the browser as the pipeline writes it."""
+        seen: set[str] = set()
+        directory = Path(job["preview_dir"])
+        while True:
+            finished = stop.wait(0.5)
+            for path in list_previews(directory):
+                if path.name in seen:
+                    continue
+                seen.add(path.name)
+                info = preview_info(path)
+                job["preview_latest"] = info
+                job["preview_count"] = len(seen)
+                self.emit("preview", {"id": job["id"], "session": job["session"], "count": len(seen), **info})
+            if finished:
+                return
 
     def _pump(self, job: dict[str, Any], stream, tail: list[str]) -> None:
         buf = b""
@@ -520,6 +568,51 @@ class Runner:
             progress["note"] = text
             return True
         return False
+
+
+def preview_args(options: dict[str, Any], directory: Path) -> list[str]:
+    """``--stepwise-*`` flags for a live preview, validated into the ranges the CLI accepts."""
+
+    def as_int(key: str, default: int | None, low: int, high: int) -> int | None:
+        value = options.get(key, default)
+        if value is None or value == "":
+            return default
+        try:
+            number = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"preview {key} must be an integer") from exc
+        if not low <= number <= high:
+            raise ValueError(f"preview {key} must be between {low} and {high}")
+        return number
+
+    directory.mkdir(parents=True, exist_ok=True)
+    args = [
+        "--stepwise-image-output-dir", str(directory),
+        "--stepwise-interval", str(as_int("interval", 1, 1, 100)),
+        "--stepwise-frames", str(as_int("frames", 8, 1, 32)),
+    ]  # fmt: skip
+    frame = as_int("frame", None, -512, 512)
+    if frame is not None:
+        args += ["--stepwise-frame", str(frame)]
+    return args
+
+
+def list_previews(directory: Path) -> list[Path]:
+    """Finished preview files in write order (stage, then step). Temp files are skipped."""
+    if not directory.is_dir():
+        return []
+    found = []
+    for path in directory.iterdir():
+        if m := PREVIEW_NAME.match(path.name):
+            found.append((int(m.group(1) or 0), int(m.group(2)), path))
+    return [path for _, _, path in sorted(found)]
+
+
+def preview_info(path: Path) -> dict[str, Any]:
+    m = PREVIEW_NAME.match(path.name)
+    stage, step, total = (int(m.group(1) or 0), int(m.group(2)), int(m.group(3))) if m else (0, 0, 0)
+    rel = _rel(path)
+    return {"url": f"/sfile/{rel}", "path": rel, "name": path.name, "stage": stage, "step": step, "total": total}
 
 
 def _quote(arg: str) -> str:
@@ -606,7 +699,7 @@ def browse_timeline(state: State, session: str, rel: str) -> dict[str, Any]:
     root = SESSIONS_DIR.resolve()
     dirs, files = [], []
     for entry in sorted(target.iterdir(), key=lambda p: p.name):
-        if entry.name.startswith("."):
+        if entry.name.startswith(".") or (entry.is_dir() and entry.name == "previews"):
             continue
         if entry.is_dir():
             dirs.append({"name": entry.name, "path": _rel(entry)})
@@ -819,6 +912,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True})
             if path == "/api/takes/delete":
                 target = self.state.resolve_media(session, "outputs", str(body.get("name")))
+                preview_dir = read_json(target.with_suffix(".json"), {}).get("preview_dir")
+                if preview_dir:
+                    previews = self.state.resolve_session_path(preview_dir)
+                    if previews.parent == self.state.session_dir(session) / "previews" and previews.is_dir():
+                        shutil.rmtree(previews)
                 target.unlink(missing_ok=True)
                 target.with_suffix(".json").unlink(missing_ok=True)
                 return self._json({"ok": True})

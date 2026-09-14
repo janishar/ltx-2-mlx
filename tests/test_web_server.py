@@ -130,3 +130,44 @@ def test_combine_timeline_validates_clips(state):
         server.combine_timeline(state, "session-1", ["session-1/outputs/missing.mp4"], "x")
     with pytest.raises(ValueError):
         server.combine_timeline(state, "session-1", ["../../etc/passwd"], "x")
+
+
+def test_preview_args_and_validation(state, runner, tmp_path: Path):
+    argv, _, session = runner.build_argv(
+        {
+            "subcommand": "generate",
+            "args": ["--stepwise-image-output-dir", "/tmp/elsewhere"],
+            "preview": {"interval": 2, "frames": 3, "frame": -1},
+        },
+        job_id="job123",
+    )
+    directory = session / "previews" / "job123"
+    assert argv[argv.index("--stepwise-image-output-dir") + 1] == str(directory) and directory.is_dir()
+    assert "/tmp/elsewhere" not in argv
+    assert argv[argv.index("--stepwise-interval") + 1] == "2"
+    assert argv[argv.index("--stepwise-frames") + 1] == "3"
+    assert argv[argv.index("--stepwise-frame") + 1] == "-1"
+
+    argv, _, _ = runner.build_argv({"subcommand": "generate", "args": [], "preview": {"frame": None}})
+    assert "--stepwise-frame" not in argv and argv[argv.index("--stepwise-frames") + 1] == "8"
+    argv, _, _ = runner.build_argv({"subcommand": "enhance", "output": "none", "args": [], "preview": {}})
+    assert "--stepwise-image-output-dir" not in argv
+
+    for bad in ({"interval": 0}, {"frames": 99}, {"frames": "many"}):
+        with pytest.raises(ValueError):
+            server.preview_args(bad, tmp_path / "p")
+
+
+def test_list_previews_orders_by_stage_then_step(state):
+    directory = state.ensure_session("session-1") / "previews" / "job"
+    directory.mkdir(parents=True)
+    for name in ("seed_1_s2_step001of003.webp", "seed_1_s1_step010of008.webp", "seed_1_s1_step002of008.webp",
+                 "seed_1_s1_step003of008.webp.tmp", "notes.txt"):  # fmt: skip
+        (directory / name).write_bytes(b"")
+    names = [p.name for p in server.list_previews(directory)]
+    assert names == ["seed_1_s1_step002of008.webp", "seed_1_s1_step010of008.webp", "seed_1_s2_step001of003.webp"]
+    info = server.preview_info(directory / "seed_1_s2_step001of003.webp")
+    assert (info["stage"], info["step"], info["total"]) == (2, 1, 3)
+    assert info["url"] == "/sfile/session-1/previews/job/seed_1_s2_step001of003.webp"
+    single = server.preview_info(directory / "seed_-5_step004of008.webp")
+    assert (single["stage"], single["step"], single["total"]) == (0, 4, 8)

@@ -6,6 +6,8 @@
 
 const $ = (id) => document.getElementById(id);
 const TASKS = Object.fromEntries(LTX_TASKS.map((t) => [t.id, t]));
+// Subcommands whose pipelines accept the --stepwise-* live preview flags.
+const PREVIEW_COMMANDS = new Set(["generate", "a2v", "retake", "extend", "keyframe", "ic-lora", "hdr-ic-lora", "lipdub"]);
 
 const S = {
   model: {},
@@ -20,12 +22,16 @@ const S = {
     autoDuration: false, autoMin: 1, autoMax: 8, seed: 42,
     quantize: "8", lowRam: false, tileFrames: 1, tileSpatial: 1, tileOverlap: 2,
     extraArgs: "", takeName: "",
+    preview: { enabled: false, interval: 1, frames: 8, position: "middle", frame: 0 },
   },
   queue: [],
   selectedTake: null,
   timeline: [],
   selectedTimeline: null,
   lastLogReplace: false,
+  followPreview: true,
+  livePreview: null,
+  scrub: null,
   restoring: false,
 };
 
@@ -146,7 +152,34 @@ function renderTask() {
   );
   renderAvailability();
   renderCanvasWarn();
+  renderPreviewOptions();
   refreshPreview();
+}
+
+function renderPreviewOptions() {
+  const p = S.common.preview;
+  const supported = PREVIEW_COMMANDS.has(TASKS[S.taskId].cmd);
+  $("previewOptions").hidden = !supported;
+  $("previewEnabled").checked = p.enabled;
+  $("previewInterval").value = p.interval;
+  $("previewFrames").value = String(p.frames);
+  $("previewPosition").value = p.position;
+  $("previewFrame").value = p.frame;
+  $("previewFrameField").hidden = p.position !== "custom";
+  $("previewSettings").classList.toggle("disabled", !p.enabled);
+  const pixelFrames = 8 * p.frames - 7;
+  const seconds = pixelFrames / (S.common.fps || 24);
+  const steps = p.interval === 1 ? "every step" : `every ${p.interval} steps (and the last)`;
+  $("previewCost").textContent = p.frames === 1
+    ? `A still frame ${steps}. Cheapest option; no motion.`
+    : `${pixelFrames} frames (${seconds.toFixed(1)} s) ${steps}. Keeps the VAE decoder in memory during denoising; with --low-ram it undoes most of the saving.`;
+}
+
+function previewRequest() {
+  const p = S.common.preview;
+  if (!p.enabled || !PREVIEW_COMMANDS.has(TASKS[S.taskId].cmd)) return undefined;
+  const frame = { middle: null, start: 0, end: -1, custom: p.frame }[p.position];
+  return { interval: p.interval, frames: p.frames, frame };
 }
 
 function renderField(field, values, rerender) {
@@ -340,6 +373,7 @@ function buildRequest(seed) {
     args,
     output: task.output,
     quantize: blocks.quantize ? c.quantize : undefined,
+    preview: previewRequest(),
     take_name: c.takeName || task.id,
     seed: blocks.seed ? seed : null,
     params: { ...snapshot(), seed },
@@ -357,6 +391,10 @@ function refreshPreview() {
   const tail = [];
   if (task.cmd !== "enhance" && task.cmd !== "slice" && task.cmd !== "train") tail.push("--model <model>");
   if (req.quantize) tail.push(`--quantize-on-load ${req.quantize}`);
+  if (req.preview) {
+    tail.push(`--stepwise-image-output-dir <session previews> --stepwise-interval ${req.preview.interval} --stepwise-frames ${req.preview.frames}`);
+    if (req.preview.frame !== null) tail.push(`--stepwise-frame ${req.preview.frame}`);
+  }
   if (task.output !== "none") tail.push("--output <session outputs>");
   $("cmdPreview").textContent = ["ltx-2-mlx", task.cmd, ...shown, ...tail].join(" ");
   const errors = collectErrors(task, taskValues());
@@ -390,7 +428,10 @@ function restore(settings) {
   if (!settings || typeof settings !== "object") return;
   S.restoring = true;
   if (settings.taskId && TASKS[settings.taskId]) S.taskId = settings.taskId;
-  if (settings.common) Object.assign(S.common, settings.common);
+  if (settings.common) {
+    const preview = { ...S.common.preview, ...(settings.common.preview || {}) };
+    Object.assign(S.common, settings.common, { preview });
+  }
   if (settings.values) S.values = { ...S.values, ...settings.values };
   syncCommonInputs();
   renderTask();
@@ -487,7 +528,7 @@ async function uploadFiles(files) {
 
 async function loadTakes(selectNewest = false) {
   S.takes = await api(`/api/takes?session=${encodeURIComponent(S.session)}`);
-  if (selectNewest && S.takes.length) selectTake(S.takes[0].name);
+  if (selectNewest && S.takes.length) selectTake(S.takes[0].name, false);
   renderTakes();
 }
 
@@ -522,6 +563,7 @@ function renderTakes() {
         el("div", { class: "meta", text: takeMeta(t) }))),
     el("div", { class: "ops" },
       t.params ? opButton("Reuse settings", "Restore the task, inputs and settings of this take", async () => restore(t.params)) : null,
+      t.previews && t.previews.length ? opButton(`Previews (${t.previews.length})`, "Scrub through the live previews saved during this render", async () => openScrubber(t)) : null,
       opButton("Chain →", "Use the last frame as the start image of Image → Video", async () => {
         const { name } = await api("/api/frame", { session: S.session, take: t.name, position: "last" });
         await loadInputs();
@@ -542,7 +584,67 @@ function renderTakes() {
       })))));
 }
 
+function hidePreview() {
+  $("previewImg").hidden = true;
+  $("previewImg").removeAttribute("src");
+  $("previewBadge").hidden = true;
+  $("previewScrub").hidden = true;
+  S.scrub = null;
+}
+
+function showPreviewImage(url, badge) {
+  const player = $("player");
+  player.pause();
+  player.classList.remove("on");
+  $("viewerEmpty").hidden = true;
+  $("previewImg").src = url;
+  $("previewImg").hidden = false;
+  $("previewBadge").textContent = badge;
+  $("previewBadge").hidden = false;
+}
+
+function previewLabel(info) {
+  const stage = info.stage ? ` · stage ${info.stage}` : "";
+  return `Preview step ${info.step}/${info.total}${stage}`;
+}
+
+function showLivePreview(info) {
+  S.livePreview = info;
+  if (!S.followPreview) return;
+  $("previewScrub").hidden = true;
+  S.scrub = null;
+  $("viewerCaption").hidden = false;
+  $("viewerCaption").textContent = `live preview · ${info.name}${info.count ? ` · ${info.count} so far` : ""}`;
+  showPreviewImage(`${info.url}?t=${info.count || 0}`, previewLabel(info));
+}
+
+function openScrubber(take) {
+  const list = take.previews || [];
+  if (!list.length) return;
+  S.followPreview = false;
+  S.scrub = { take, list };
+  const slider = $("previewSlider");
+  slider.max = String(list.length - 1);
+  slider.value = String(list.length - 1);
+  $("previewScrub").hidden = false;
+  renderScrub();
+}
+
+function renderScrub() {
+  if (!S.scrub) return;
+  const path = S.scrub.list[Number($("previewSlider").value)];
+  const name = path.split("/").pop();
+  const m = name.match(/_s(\d+)_step(\d+)of(\d+)\.webp$/) || name.match(/_step(\d+)of(\d+)\.webp$/);
+  const info = m && m.length === 4 ? { stage: Number(m[1]), step: Number(m[2]), total: Number(m[3]) } : m ? { stage: 0, step: Number(m[1]), total: Number(m[2]) } : { stage: 0, step: 0, total: 0 };
+  $("previewScrubLabel").textContent = `${Number($("previewSlider").value) + 1}/${S.scrub.list.length}`;
+  $("viewerCaption").hidden = false;
+  $("viewerCaption").textContent = `${S.scrub.take.name} · previews · ${name}`;
+  showPreviewImage(`/sfile/${path}`, previewLabel(info));
+  $("previewScrub").hidden = false;
+}
+
 function showInViewer(item, caption = "") {
+  hidePreview();
   const player = $("player");
   if (item) {
     player.src = item.url;
@@ -563,7 +665,8 @@ function showInViewer(item, caption = "") {
   document.querySelectorAll("#timelineList li").forEach((li, i) => li.classList.toggle("on", !!S.timeline[i] && S.timeline[i].name === S.selectedTimeline));
 }
 
-function selectTake(name) {
+function selectTake(name, fromUser = true) {
+  if (fromUser) S.followPreview = false;
   const take = S.takes.find((t) => t.name === name);
   S.selectedTake = take ? name : null;
   S.selectedTimeline = null;
@@ -614,6 +717,7 @@ function renderTimelineList() {
 }
 
 function selectTimeline(name) {
+  S.followPreview = false;
   const item = S.timeline.find((t) => t.name === name);
   S.selectedTimeline = item ? name : null;
   S.selectedTake = null;
@@ -776,6 +880,12 @@ function renderQueue(items) {
   S.queue = items;
   const running = items.find((j) => j.status === "running" || j.status === "cancelling");
   const pending = items.filter((j) => j.status === "queued");
+  if (running && S.runningId !== running.id) {
+    S.runningId = running.id;
+    S.followPreview = true;
+    S.livePreview = null;
+  }
+  if (!running) S.runningId = null;
   $("lamp").classList.toggle("busy", !!running);
   $("lampText").textContent = running ? (pending.length ? `busy · ${pending.length} queued` : "busy") : "idle";
   $("running").hidden = !running;
@@ -798,6 +908,13 @@ function renderRunning(job) {
   const started = job.started ? Date.parse(job.started) : null;
   $("elapsed").textContent = started ? `${fmtSecs((Date.now() - started) / 1000)} elapsed${p.note ? ` · ${p.note}` : ""}` : "";
   $("stopBtn").onclick = () => api("/api/cancel", { id: job.id });
+  const latest = job.preview_latest || (S.livePreview && S.livePreview.id === job.id ? S.livePreview : null);
+  $("followPreviewBtn").hidden = !latest || S.followPreview;
+  $("followPreviewBtn").onclick = () => {
+    S.followPreview = true;
+    showLivePreview({ ...latest, id: job.id, count: job.preview_count || latest.count });
+    $("followPreviewBtn").hidden = true;
+  };
 }
 
 function appendLog(line, replace, kind) {
@@ -827,6 +944,11 @@ function connectEvents() {
       if (data.status === "failed" && data.error) flashError(`${data.label} failed: ${data.error}`);
     } else if (type === "takes" && data.session === S.session) loadTakes(true);
     else if (type === "timeline" && data.session === S.session) loadTimeline();
+    else if (type === "preview" && data.session === S.session) {
+      const job = S.queue.find((j) => j.id === data.id);
+      if (job) { job.preview_latest = data; job.preview_count = data.count; renderRunning(job); }
+      showLivePreview(data);
+    }
   };
   es.onerror = () => { $("lampText").textContent = "reconnecting…"; };
 }
@@ -929,6 +1051,14 @@ function bindCommon() {
   $("lowRam").addEventListener("change", (e) => { c.lowRam = e.target.checked; refreshPreview(); saveSettings(); });
   $("extraArgs").addEventListener("input", (e) => { c.extraArgs = e.target.value; refreshPreview(); saveSettings(); });
   $("takeName").addEventListener("input", (e) => { c.takeName = e.target.value; saveSettings(); });
+  const previewChanged = () => { renderPreviewOptions(); refreshPreview(); saveSettings(); };
+  $("previewEnabled").addEventListener("change", (e) => { c.preview.enabled = e.target.checked; previewChanged(); });
+  $("previewInterval").addEventListener("input", (e) => { const v = num(e.target.value); if (v !== null && v >= 1) { c.preview.interval = Math.round(v); previewChanged(); } });
+  $("previewFrames").addEventListener("change", (e) => { c.preview.frames = Number(e.target.value); previewChanged(); });
+  $("previewPosition").addEventListener("change", (e) => { c.preview.position = e.target.value; previewChanged(); });
+  $("previewFrame").addEventListener("input", (e) => { const v = num(e.target.value); if (v !== null) { c.preview.frame = Math.round(v); previewChanged(); } });
+  $("previewSlider").addEventListener("input", renderScrub);
+  $("previewClose").addEventListener("click", () => { const take = S.scrub && S.scrub.take; hidePreview(); if (take) selectTake(take.name); });
   $("dice").addEventListener("click", () => { c.seed = randomSeed(); $("seed").value = c.seed; refreshPreview(); saveSettings(); });
 
   $("sizePresets").replaceChildren(...SIZE_PRESETS.map(([id, label, w, h]) => el("button", {
