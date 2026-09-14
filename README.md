@@ -256,6 +256,36 @@ video_lat, audio_lat = pipe.extend_from_video(
 )
 ```
 
+## Mode Launcher (`scripts/ltx_run.py`)
+
+One command per input type, with lengths in seconds and times in seconds
+instead of frame counts and latent indices. It prints the exact `ltx-2-mlx`
+command it runs; anything after `--` is passed through.
+
+```bash
+export LTX_MODEL=/path/to/model          # pack dir, official LTX-2.5 dir, or HF repo
+uv run python scripts/ltx_run.py modes   # what this model can run
+
+uv run python scripts/ltx_run.py t2v     -p "a fox in the snow" --seconds 3 --size 720p
+uv run python scripts/ltx_run.py i2v     -p "she turns and smiles" --image face.jpg
+uv run python scripts/ltx_run.py flf2v   -p "day turns to night" --first day.png --last night.png
+uv run python scripts/ltx_run.py anchors -p "a walk" --anchor start.png@0 --anchor mid.png@1.5@0.8
+uv run python scripts/ltx_run.py story   -p "cinematic kitchen" --beat "chopping onions" --beat "serving"
+uv run python scripts/ltx_run.py a2v     -p "a singer on stage" --audio song.wav --image singer.png
+uv run python scripts/ltx_run.py retake  -p "he waves instead" --video clip.mp4 --from 1 --to 2.5
+uv run python scripts/ltx_run.py extend  -p "the car drives off" --video clip.mp4 --add-seconds 2
+uv run python scripts/ltx_run.py keyframe -p "a smooth morph" --first a.png --last b.png
+uv run python scripts/ltx_run.py v2v     -p "a dancer" --control pose.mp4 --lora Lightricks/LTX-2.3-22b-IC-LoRA-Union-Control
+uv run python scripts/ltx_run.py demo    # run every supported mode, chaining outputs as inputs
+```
+
+Common flags: `--size {small,square,portrait,sd,720p,1080p}` or `-W/-H`,
+`--seconds` or `--frames`, `--auto-duration` (LTX-2.5), `--fps`, `--seed`,
+`--quantize {8,4,none}`, `--pipeline {distilled,two-stage,hq,one-stage}`,
+`--dry-run`. Outputs default to `outputs/<mode>-<time>-s<seed>.mp4`.
+`a2v`, `retake`, `extend`, `keyframe` and the non-distilled pipelines need the
+dev transformer; `v2v`, `hdr` and `lipdub` need an LTX-2.3 pack and an IC-LoRA.
+
 ## CLI Reference
 
 > **Full pipeline + flag matrix**: see [docs/PIPELINES.md](docs/PIPELINES.md) for a complete matrix of every CLI subcommand, the pipeline class behind it, supported sampler / model defaults, and which memory / perf flags apply where.
