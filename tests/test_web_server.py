@@ -202,9 +202,106 @@ def test_request_guard_blocks_rebinding_and_cross_site():
     assert guard("POST", "/api/upload?session=s", {"Host": "127.0.0.1:8720", "X-Filename": "a.png"}, allowed) is None
 
 
+def test_progress_eta_and_stages():
+    job = {"progress": {"phase": "", "step": 0, "total": 0, "stage": 0, "stage_key": None}}
+    parse = server.Runner._parse
+    assert parse(job, "[Loading text encoder (Gemma)] ...") and job["progress"]["stage_key"] == "encode"
+    assert (
+        parse(job, "[Loading transformer (transformer-dev.safetensors)] ...") and job["progress"]["stage_key"] == "load"
+    )
+    assert parse(job, "[estimate] denoising: 30 steps x 2 passes over 1650 video + 200 audio tokens = 60 forwards")
+    assert job["progress"]["stage_key"] == "denoise"
+    assert parse(job, "[estimate] denoising: ~1 min 30 s remaining (1.5 s/forward) (refined)")
+    assert job["progress"]["eta_s"] == 90 and job["progress"]["eta_at"] > 0
+    # Stage 2 reloads the transformer: the stepper never moves backwards, and the old ETA is dropped.
+    assert parse(job, "[Loading transformer (transformer-distilled.safetensors)] ...")
+    assert job["progress"]["stage_key"] == "denoise"
+    assert parse(job, "[estimate] denoising: 3 steps x 1 passes over 6600 video + 200 audio tokens = 3 forwards")
+    assert job["progress"]["stage"] == 2 and "eta_s" not in job["progress"]
+    assert parse(job, "[Loading decoders (VAE + audio + vocoder)] ...") and job["progress"]["stage_key"] == "decode"
+    assert parse(job, "[Decoding video + audio + muxing] ...") and job["progress"]["stage_key"] == "decode"
+    assert parse(job, "Saved to: /tmp/x.mp4") and job["progress"]["stage_key"] == "save"
+
+
+def test_parse_duration():
+    assert server.parse_duration("5 s") == 5
+    assert server.parse_duration("1 min 30 s") == 90
+    assert server.parse_duration("1 h 30 min") == 5400
+    assert server.parse_duration("soon") is None
+
+
+def test_failure_hints():
+    watchdog = ["Loading...", "libc++abi: [METAL] Command buffer execution failed: Impacting Interactivity (0000000e)"]
+    assert "watchdog" in server.hint_for(watchdog)
+    oom = [
+        "[METAL] Command buffer execution failed: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)"
+    ]
+    assert "memory" in server.hint_for(oom)
+    assert "DurationHead" in server.hint_for(["ValueError: ... Pass num_frames explicitly."])
+    assert "dev transformer" in server.hint_for(["FileNotFoundError: --dev-transformer 'x' not found in model dir: /m"])
+    # Normal loading lines that merely mention the dev transformer don't trigger that hint.
+    assert server.hint_for(["[Loading transformer (transformer-dev.safetensors)] ...", "KeyError: 'x'"]) == ""
+    tail = ["[Loading transformer] ...", "Traceback (most recent call last):", "ValueError: bad size", "  at end"]
+    assert server.last_error_line(tail, 1) == "ValueError: bad size"
+    assert server.last_error_line([], 3) == "exit code 3"
+
+
+def _take(outputs: Path, name: str, elapsed: float, width: int, frames: int, task: str = "t2v") -> None:
+    (outputs / f"{name}.mp4").write_bytes(b"")
+    params = {"taskId": task, "common": {"width": width, "height": 448, "frames": frames, "quantize": "8"},
+              "values": {task: {"pipeline": "distilled", "prompt_unrelated": "x"}}}  # fmt: skip
+    server.write_json(outputs / f"{name}.json", {"elapsed": elapsed, "params": params})
+
+
+def test_estimate_from_session_takes(state):
+    outputs = state.ensure_session("session-1") / "outputs"
+    params = {"taskId": "t2v", "common": {"width": 704, "height": 448, "frames": 49, "quantize": "8"},
+              "values": {"t2v": {"pipeline": "distilled"}}}  # fmt: skip
+    assert state.estimate("session-1", params) == {}
+    _take(outputs, "a", 100, 704, 97)
+    scaled = state.estimate("session-1", params)
+    assert scaled == {"seconds": 51, "samples": 1, "exact": False}
+    _take(outputs, "b", 40, 704, 49)
+    _take(outputs, "c", 60, 704, 49)
+    _take(outputs, "d", 999, 704, 49, task="i2v")
+    assert state.estimate("session-1", params) == {"seconds": 50, "samples": 2, "exact": True}
+    assert state.estimate("session-1", {"common": {}}) == {}
+
+
+def test_star_round_trip_and_terminal_log(state):
+    outputs = state.ensure_session("session-1") / "outputs"
+    _take(outputs, "take", 10, 704, 49)
+    assert state.set_star("session-1", "take.mp4", True)["starred"]
+    item = next(t for t in state.list_media("session-1", "outputs") if t["name"] == "take.mp4")
+    assert item["starred"] is True and item["elapsed"] == 10
+    with pytest.raises(ValueError):
+        state.set_star("session-1", "missing.mp4", True)
+
+    for i in range(3):
+        state.append_terminal("session-1", f"line {i}")
+    assert state.terminal_tail("session-1", 2) == ["line 1", "line 2"]
+    assert state.terminal_tail("nope") == []
+
+
+def test_setup_checks(state, tmp_path: Path):
+    pack = tmp_path / "pack"
+    pack.mkdir()
+    for name in ("transformer-distilled.safetensors", "vae_decoder.safetensors"):
+        (pack / name).write_bytes(b"")
+    checks = {c["label"]: c for c in server.setup_checks(server.LTX_RUN.inspect_model(str(pack)))}
+    assert checks["transformer"]["level"] == "ok" and checks["VAE decoder"]["level"] == "ok"
+    assert checks["upscaler"]["level"] == "warn"
+    assert server.setup_checks(server.LTX_RUN.inspect_model("/does/not/exist"))[0]["level"] == "bad"
+    assert server.setup_checks(server.LTX_RUN.inspect_model("Lightricks/LTX-2.5"))[0]["level"] == "info"
+    assert server.setup_checks(None)[0]["level"] == "bad"
+    assert server.checks_status([{"level": "ok"}, {"level": "info"}]) == "warn"
+
+
 def test_jobs_submitted_together_get_distinct_outputs(state, runner):
     """Queue 3 seeds submits in the same second; each take needs its own file."""
     req = {"session": "session-1", "subcommand": "generate", "task_id": "t2v", "args": ["--prompt", "x"]}
     outputs = [runner.submit({**req, "seed": seed})["output"] for seed in (1, 2, 3)]
     assert len(set(outputs)) == 3
     assert all(Path(o).parent == state.session_dir("session-1") / "outputs" for o in outputs)
+    job = runner.jobs[runner.pending[0]]
+    assert runner.summary(job)["progress"]["stage_key"] is None
