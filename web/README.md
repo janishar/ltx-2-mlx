@@ -25,7 +25,15 @@ from the **Model** button, which shows what the model can run (distilled / dev
 transformer, LTX-2.5 vs 2.3). `--gemma` sets the Gemma 3 repo used by LTX-2.3
 packs and prompt enhancement.
 
-There is **no authentication** — keep it bound to `127.0.0.1`.
+There is **no authentication** — keep it bound to `127.0.0.1` (see [Security](#security)).
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--model` | `$LTX_MODEL` | Model directory, official LTX-2.5 files or Hugging Face repo id. |
+| `--gemma` | `$LTX_GEMMA` | Gemma 3 repo for LTX-2.3 packs and prompt enhancement. |
+| `--host` | `127.0.0.1` | Bind address. A warning is printed for anything but loopback. |
+| `--port` | `8720` | Bind port. |
+| `--allow-host` | *(none)* | Extra `Host` names to accept, comma-separated. IP addresses and `localhost` are always accepted. |
 
 ### Run from VS Code
 
@@ -62,16 +70,58 @@ a sample path — edit it in `.vscode/launch.json`, or use "custom paths".
    the 8k+1 frame grid (or LTX-2.5 auto duration), seed, and task options. **Advanced** holds
    sampler knobs, LoRAs, quantize-on-load, low-RAM streaming, tiling and extra
    raw arguments. **Command** shows the exact `ltx-2-mlx` invocation.
-4. **Render** (or ⌘/Ctrl+Enter) queues the job; **Queue 3 seeds** queues three
-   random seeds. One job runs at a time; the stage shows the phase, denoising
-   step progress, elapsed time and a **Stop** button, and the terminal streams
-   the live log.
+   **History ▾** under the prompt brings back any prompt this session's takes used.
+4. **Render** (or ⌘/Ctrl+Enter) queues the job; **Queue 3 seeds** (⇧⌘/Ctrl+Enter)
+   queues three random seeds and opens them side by side when they finish (see
+   [Comparing takes](#comparing-takes)). Both sit in the render bar pinned to the
+   bottom of the left pane, next to an estimate taken from this session's finished
+   takes (`≈` when earlier takes had the same settings, `~` when scaled from takes
+   of the same task at another size or length).
+   One job runs at a time. The progress card shows an Encode → Load → Denoise →
+   Decode → Save stepper, denoising step progress, elapsed time, the time left in
+   the current denoising stage (from the pipeline's own `[estimate]` lines) and a
+   **Stop** button; the tab title shows overall progress, and 🔔 in the top bar
+   turns on a browser notification when a render finishes while the tab is in the
+   background. A failed render pops up its error and, for known problems (out of
+   memory, the macOS GPU watchdog, a missing DurationHead or dev transformer,
+   Hugging Face access, ffmpeg), a hint about what to try.
 5. Optionally tick **Live preview** before rendering to watch the video take
    shape — see [Live preview](#live-preview).
-6. Every take appears on the right with its settings. From a take you can
-   **Reuse settings**, **Chain →** (last frame becomes the start image of
-   Image → Video), pull its first/last frame, the video itself (for retake,
-   extend or control) or its audio (for audio → video) into inputs.
+6. Every take appears under **Takes** on the right with its settings. From a take
+   you can **Chain →** (last frame becomes the start image of Image → Video),
+   **Reuse** its settings, pull the video itself (**Use video**, for retake, extend
+   or control) or its **Last frame** into inputs. The **⋮** menu adds the first
+   frame, the audio track (for audio → video), **Previews (N)**, **Add to compare**,
+   **Download** and **Delete…**. ☆ stars a take and **★ starred only** filters the
+   list. The **Timeline** tab lists combined videos.
+
+The terminal is saved per session in `terminal.log` and restored when the session
+opens; drag its top edge to resize it. With more than eight inputs of mixed kinds,
+chips above the library filter it by kind.
+
+## Comparing takes
+
+- **Seed grid** — after **Queue 3 seeds** finishes, the viewer shows the takes
+  muted, looped and playing in sync, each with **☆ Keep** (stars the take) and
+  **Open**. Any 2–4 takes picked with **Add to compare** open the same grid from
+  **Grid** in the compare bar.
+- **A/B wipe** — with exactly two takes picked, **A/B wipe** overlays them: drag
+  across the video or use the slider to move the split.
+
+Esc or **Close** returns to the selected take.
+
+## Keyboard
+
+| Key | Action |
+| --- | --- |
+| ⌘/Ctrl+Enter | Render |
+| ⇧⌘/Ctrl+Enter | Queue 3 seeds |
+| Space | Play / pause the viewer |
+| ← / → | Step one frame back / forward |
+| J / K | Next / previous take |
+| Esc | Close dialogs, menus and the compare view |
+
+Space, arrows and J/K are ignored while typing in a field.
 
 ## Canvas size
 
@@ -118,7 +168,7 @@ adjustable.
 
 While a job runs, clicking another take stops the viewer following the render;
 **Show live preview** in the progress panel switches back. When the take is
-done the viewer switches to the finished video, and the take gains
+done the viewer switches to the finished video, and the take's ⋮ menu gains
 **Previews (N)**: a slider through every preview in order, with
 **Back to video** to return. Previews live in `previews/<job>/`. They are
 deleted with their take, and also when the job fails, is stopped, or produced
@@ -139,7 +189,7 @@ video:
   letterboxes every clip onto the largest width/height in the queue, resamples
   to 24 fps, adds silence for clips without audio, and writes
   `timeline/<name>.mp4` plus a `.json` sidecar listing the source clips. The
-  result plays here and appears in the **Timeline** list under Takes.
+  result plays here and appears in the **Timeline** tab on the right.
 
 Source clips are only read, never modified. A combined video can be pulled
 back into inputs with **Use video** (e.g. to extend it).
@@ -149,14 +199,40 @@ back into inputs with **Use video** (e.g. to extend it).
 ```
 web/sessions/<name>/
   setting.json   task, prompt and all form values — saved as you edit
+  terminal.log   the session's terminal output (rotated at ~2 MB)
   inputs/        uploads, extracted frames/audio, takes reused as inputs
-  outputs/       rendered .mp4 takes, each with a .json sidecar (params, argv, probe, previews)
+  outputs/       rendered .mp4 takes, each with a .json sidecar (params, argv, probe, previews, starred)
   previews/      live-preview WebPs, one folder per render
   timeline/      combined videos, each with a .json sidecar (source clips, probe)
 ```
 
-Switch, create, duplicate or delete sessions from the top bar; the last one is
-restored on start. `web/sessions/` is git-ignored.
+Switch sessions from the top bar; new, duplicate and delete live in the **⋯**
+menu next to it. The last session is restored on start. `web/sessions/` is
+git-ignored.
+
+## Model and setup
+
+The **Model** button shows a status dot: green when everything checks out, amber
+for a Hugging Face repo id (not inspected until it downloads) or a missing
+optional file, red when no model is set, the directory is missing, or
+`ffmpeg`/`ffprobe` aren't on `PATH`. The dialog lists each check (transformer
+variants, VAE decoder, spatial upscaler, ffmpeg, ffprobe) and what the model can
+run; **Recheck** runs the checks again after you fix something.
+
+## Security
+
+ltx studio has no authentication, so it defends against the one thing a local
+tool must: other websites and other machines driving it.
+
+- It binds to `127.0.0.1` by default and warns for any other address. Anyone
+  who can reach the port can run jobs.
+- Requests whose `Host` header isn't an IP address, `localhost`, the `--host`
+  value or an `--allow-host` name are refused, which blocks DNS rebinding.
+- State-changing requests must come from the studio's own origin and carry a
+  JSON content type (uploads: an `X-Filename` header), so a page you visit can't
+  forge them.
+- Only whitelisted `ltx-2-mlx` subcommands run, without a shell, and task inputs
+  must be files inside the session's `inputs/`.
 
 ## Adding a task
 

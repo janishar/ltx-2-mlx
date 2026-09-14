@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import importlib.util
+import ipaddress
 import json
 import mimetypes
 import os
@@ -40,8 +41,8 @@ from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from typing import Any, ClassVar
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 WEB_DIR = Path(__file__).resolve().parent
 REPO_ROOT = WEB_DIR.parent
@@ -64,6 +65,8 @@ PREVIEW_NAME = re.compile(r"^seed_-?\d+(?:_s(\d+))?_step(\d+)of(\d+)\.webp$")
 MEDIA_KINDS = {"inputs", "outputs", "timeline"}
 VIDEO_EXTS = {".mp4", ".mov"}
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
+TERMINAL_LOG = "terminal.log"
+TERMINAL_LOG_MAX_BYTES = 2 << 20
 
 
 def _load_launcher():
@@ -172,6 +175,211 @@ def media_kind(name: str) -> str:
     return mime.split("/")[0] if mime.split("/")[0] in {"image", "video", "audio"} else "file"
 
 
+def host_only(hostport: str) -> str:
+    """``host`` from a ``Host`` header value (``host:port``, ``[::1]:port`` or bare)."""
+    if hostport.startswith("["):
+        return hostport[1 : hostport.find("]")] if "]" in hostport else hostport
+    return hostport.rsplit(":", 1)[0] if hostport.count(":") == 1 else hostport
+
+
+def host_allowed(hostport: str, allowed: set[str]) -> bool:
+    """IP addresses and ``localhost`` always pass; any other name must be allowlisted (blocks DNS rebinding)."""
+    host = host_only(hostport).lower()
+    if not host:
+        return False
+    if host == "localhost" or host in allowed:
+        return True
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def request_guard(method: str, path: str, headers: Any, allowed_hosts: set[str]) -> tuple[int, str] | None:
+    """Refuse DNS-rebinding, cross-site and non-JSON state-changing requests.
+
+    There is no authentication, so this is what stops a web page you visit from
+    driving the studio: a forged POST either carries a foreign ``Origin`` or
+    cannot set a JSON content type (or ``X-Filename``) without a CORS preflight,
+    which this server never answers. Returns ``(status, message)`` to refuse, or
+    ``None`` to allow.
+    """
+    host = headers.get("Host", "")
+    if not host_allowed(host, allowed_hosts):
+        return 403, f"unrecognized Host header; start ltx studio with --allow-host {host_only(host)} to allow it"
+    if method in {"GET", "HEAD"}:
+        return None
+    origin = headers.get("Origin")
+    if origin:
+        parsed = urlparse(origin)
+        if origin == "null" or parsed.netloc.lower() != host.lower():
+            return 403, "cross-origin request refused"
+    elif headers.get("Sec-Fetch-Site") == "cross-site":
+        return 403, "cross-site request refused"
+    if urlparse(path).path == "/api/upload":
+        return None if headers.get("X-Filename") else (400, "X-Filename header is required")
+    content_type = (headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+    if content_type != "application/json":
+        return 415, "Content-Type must be application/json"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# estimates, failure hints, setup checks
+# ---------------------------------------------------------------------------
+
+#: Task values that change how much work a render does (compared exactly for estimates).
+WORKLOAD_VALUE = re.compile(r"steps|pipeline|teacache|topology|skipStage2|^mode$|^cfg$|^stg$", re.IGNORECASE)
+
+
+def workload(params: dict[str, Any]) -> dict[str, Any] | None:
+    """Comparable workload of a take's saved form ``params`` (``snapshot()`` in app.js), or None."""
+    task = params.get("taskId")
+    common = params.get("common")
+    if not task or not isinstance(common, dict):
+        return None
+    values = (params.get("values") or {}).get(task) or {}
+    try:
+        width, height = int(common.get("width") or 0), int(common.get("height") or 0)
+        frames = int(common.get("frames") or 0)
+    except (TypeError, ValueError):
+        return None
+    auto = bool(common.get("autoDuration"))
+    preview = common.get("preview") if isinstance(common.get("preview"), dict) else {}
+    key = {
+        "task": task, "width": width, "height": height, "frames": "auto" if auto else frames,
+        "lowRam": bool(common.get("lowRam")), "quantize": common.get("quantize"),
+        "tiles": [common.get("tileFrames"), common.get("tileSpatial")], "preview": bool(preview.get("enabled")),
+        "values": {k: v for k, v in sorted(values.items()) if WORKLOAD_VALUE.search(k) and not isinstance(v, (dict, list))},
+    }  # fmt: skip
+    return {"task": task, "key": json.dumps(key, sort_keys=True), "work": 0 if auto else width * height * frames}
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+
+
+DURATION_PART = re.compile(r"(\d+(?:\.\d+)?)\s*(h|min|s)\b")
+
+
+def parse_duration(text: str) -> float | None:
+    """Seconds from ``utils/estimate.py::format_duration`` output (``5 s``, ``1 min 30 s``, ``1 h 30 min``)."""
+    parts = DURATION_PART.findall(text)
+    if not parts:
+        return None
+    scale = {"h": 3600, "min": 60, "s": 1}
+    return sum(float(value) * scale[unit] for value, unit in parts)
+
+
+#: (pattern, advice) for known failure output. Advice only: the studio never changes settings for you.
+FAILURE_HINTS: list[tuple[re.Pattern[str], str]] = [
+    (
+        re.compile(r"Impacting ?Interactivity|MTLCommandBufferError|Command buffer execution failed: (?!Insufficient)"),
+        "The macOS GPU watchdog stopped a long Metal command. Let the display sleep during the render, or lower "
+        "LTX2_DIT_EVAL_EVERY / LTX2_GEMMA_EVAL_EVERY (they split GPU work into smaller command buffers).",
+    ),
+    (
+        re.compile(r"(?i)insufficient memory|out of memory|failed to allocate|cannot allocate|\bOOM\b"),
+        "Ran out of memory. Try Low RAM block streaming, int8/int4 quantize on load, tiling for large canvases, "
+        "or a smaller canvas / fewer frames. Live preview also keeps the VAE decoder loaded.",
+    ),
+    (
+        re.compile(r"no DurationHead|Pass num_frames explicitly"),
+        "This model has no DurationHead (LTX-2.3 pack), so auto duration can't run — turn off Auto duration and set frames.",
+    ),
+    (
+        re.compile(r"(?i)GatedRepoError|401 Client Error|Repository Not Found|RepositoryNotFoundError|gated repo"),
+        "Hugging Face refused the download. Check the repo id, accept the model's terms on huggingface.co, "
+        "and run `hf auth login` in the shell that starts the studio.",
+    ),
+    (
+        re.compile(r"(?i)(dev.transformer|transformer-dev)\S*.*not found|not found.*(dev.transformer|transformer-dev)"),
+        "This task needs the dev transformer, which the model directory doesn't have. Pick a distilled pipeline "
+        "or point the model at a pack with transformer-dev.safetensors.",
+    ),
+    (
+        re.compile(r"(?i)(ffmpeg|ffprobe) not found|ffmpeg.*(failed|error)"),
+        "FFmpeg failed or wasn't found. Install it with `brew install ffmpeg` and restart the studio.",
+    ),
+    (
+        re.compile(r"FileNotFoundError"),
+        "A file the pipeline needed is missing. Open the Model dialog to check the model directory, and check "
+        "that the task's inputs and LoRA paths still exist.",
+    ),
+]
+
+
+def hint_for(tail: list[str]) -> str:
+    """Advice for the first known failure pattern found in the output tail (newest lines first)."""
+    for pattern, hint in FAILURE_HINTS:
+        if any(pattern.search(line) for line in reversed(tail)):
+            return hint
+    return ""
+
+
+def last_error_line(tail: list[str], returncode: int) -> str:
+    """The line to show for a failed job: the last exception-looking line, else the last line."""
+    for line in reversed(tail):
+        text = line.strip()
+        if re.match(r"^[A-Za-z_.]*(Error|Exception)\b.*:", text) or text.startswith("error:"):
+            return text
+    return next((line for line in reversed(tail) if line.strip()), f"exit code {returncode}")
+
+
+def setup_checks(info: Any) -> list[dict[str, str]]:
+    """Model and tool checks for the Model dialog. level: ok | warn | bad | info."""
+    checks: list[dict[str, str]] = []
+    if info is None:
+        checks.append({"level": "bad", "label": "model", "detail": "not configured"})
+    elif not info.local:
+        path_like = info.model.startswith(("/", "~", "."))
+        checks.append({
+            "level": "bad" if path_like else "info", "label": "model",
+            "detail": "directory not found" if path_like else "Hugging Face repo id — not inspected, downloaded on first use",
+        })  # fmt: skip
+    else:
+        root = Path(info.model).expanduser()
+        names = {p.name for p in root.rglob("*.safetensors")} if root.is_dir() else set()
+        checks.append({"level": "ok", "label": "model", "detail": "LTX-2.5" if info.is_25 else "LTX-2.3 / other"})
+        transformer = info.has_distilled or info.has_dev
+        checks.append({
+            "level": "ok" if transformer else "bad", "label": "transformer",
+            "detail": " + ".join(n for n, ok in (("distilled", info.has_distilled), ("dev", info.has_dev)) if ok) or "none found",
+        })  # fmt: skip
+        official = any(n.startswith("ltx-2.5") for n in names)
+        if not official:
+            vae = any(n.startswith("vae_decoder") for n in names)
+            checks.append(
+                {
+                    "level": "ok" if vae else "warn",
+                    "label": "VAE decoder",
+                    "detail": "found" if vae else "vae_decoder*.safetensors not found",
+                }
+            )
+            upscaler = any(n.startswith("spatial_upscaler") for n in names)
+            checks.append(
+                {
+                    "level": "ok" if upscaler else "warn",
+                    "label": "upscaler",
+                    "detail": "found" if upscaler else "no spatial_upscaler — two-stage pipelines will fail",
+                }
+            )
+    for tool in ("ffmpeg", "ffprobe"):
+        found = which(tool)
+        checks.append(
+            {"level": "ok" if found else "bad", "label": tool, "detail": found or "not on PATH — brew install ffmpeg"}
+        )
+    return checks
+
+
+def checks_status(checks: list[dict[str, str]]) -> str:
+    levels = {c["level"] for c in checks}
+    return "bad" if "bad" in levels else "warn" if levels & {"warn", "info"} else "ok"
+
+
 # ---------------------------------------------------------------------------
 # state: config + sessions
 # ---------------------------------------------------------------------------
@@ -216,7 +424,8 @@ class State:
     def model_info(self) -> dict[str, Any]:
         info = LTX_RUN.inspect_model(self.model) if self.model else None
         if info is None:
-            return {"model": "", "configured": False}
+            return {"model": "", "configured": False, "checks": setup_checks(None), "status": "bad"}
+        checks = setup_checks(info)
         return {
             "model": self.model,
             "configured": True,
@@ -226,7 +435,74 @@ class State:
             "has_dev": info.has_dev,
             "is_25": info.is_25,
             "gemma": self.gemma or "",
+            "checks": checks,
+            "status": checks_status(checks),
         }
+
+    # terminal log ------------------------------------------------------------
+    def append_terminal(self, session: str, line: str) -> None:
+        """Append one finished terminal line to the session's ``terminal.log`` (rotated at ~2 MB)."""
+        try:
+            path = self.session_dir(session) / TERMINAL_LOG
+            if not path.parent.is_dir():
+                return
+            with self.lock:
+                if path.exists() and path.stat().st_size > TERMINAL_LOG_MAX_BYTES:
+                    path.replace(path.with_suffix(".log.1"))
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(line.rstrip("\n") + "\n")
+        except (OSError, ValueError):
+            pass
+
+    def terminal_tail(self, session: str, lines: int = 400) -> list[str]:
+        path = self.session_dir(session) / TERMINAL_LOG
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                start = max(0, f.tell() - 256_000)
+                f.seek(start)
+                text = f.read().decode("utf-8", "replace").splitlines()
+        except OSError:
+            return []
+        return (text[1:] if start else text)[-lines:]  # a mid-file seek starts on a partial line
+
+    def set_star(self, session: str, name: str, starred: bool) -> dict[str, Any]:
+        take = self.resolve_media(session, "outputs", name)
+        sidecar = take.with_suffix(".json")
+        if not take.is_file():
+            raise ValueError("take not found")
+        with self.lock:
+            meta = read_json(sidecar, {})
+            meta["starred"] = bool(starred)
+            write_json(sidecar, meta)
+        return {"ok": True, "starred": meta["starred"]}
+
+    def estimate(self, session: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Predict a render's wall time from this session's finished takes.
+
+        The median of takes with the same workload when there are any (exact);
+        otherwise the median of same-task takes scaled by pixels x frames. Empty
+        when nothing fits.
+        """
+        target = workload(params)
+        if target is None:
+            return {}
+        same, scaled = [], []
+        for sidecar in (self.ensure_session(session) / "outputs").glob("*.json"):
+            meta = read_json(sidecar, {})
+            elapsed = meta.get("elapsed")
+            prior = workload(meta.get("params") or {})
+            if not isinstance(elapsed, (int, float)) or elapsed <= 0 or prior is None:
+                continue
+            if prior["key"] == target["key"]:
+                same.append(float(elapsed))
+            elif prior["task"] == target["task"] and prior["work"] > 0:
+                scaled.append(float(elapsed) * target["work"] / prior["work"])
+        if same:
+            return {"seconds": round(_median(same)), "samples": len(same), "exact": True}
+        if scaled:
+            return {"seconds": round(_median(scaled)), "samples": len(scaled), "exact": False}
+        return {}
 
     def resolve_media(self, session: str, kind: str, name: str) -> Path:
         if kind not in MEDIA_KINDS:
@@ -280,8 +556,16 @@ class State:
 
 PHASE_RE = re.compile(r"^\[([^\]]+)\] \.\.\.$")
 ESTIMATE_RE = re.compile(r"^\[estimate\] denoising(?: \(([^)]+)\))?: (\d+) steps")
+REMAINING_RE = re.compile(r"^\[estimate\] [^:]+: ~(.+?) remaining")
 TQDM_RE = re.compile(r"(Denoising[^:]*):\s+(\d+)%\|.*?\|\s*(\d+)/(\d+)")
 SAVED_RE = re.compile(r"Saved to: (.+)$")
+#: Stepper stages in order; a job's stage only ever moves forward (two-stage runs reload the transformer).
+STAGES = ("encode", "load", "denoise", "decode", "save")
+PHASE_STAGES = (
+    (re.compile(r"^(Loading text encoder|Encoding prompt)"), "encode"),
+    (re.compile(r"^Loading transformer"), "load"),
+    (re.compile(r"^(Loading decoders|Decoding)"), "decode"),
+)
 
 
 class Runner:
@@ -294,6 +578,8 @@ class Runner:
         self.cond = threading.Condition()
         self.subscribers: list[queue.Queue] = []
         self.sub_lock = threading.Lock()
+        #: Guards job dicts: the worker thread mutates them while request threads serialize summaries.
+        self.job_lock = threading.Lock()
         threading.Thread(target=self._loop, daemon=True).start()
 
     # events ---------------------------------------------------------------
@@ -314,11 +600,23 @@ class Runner:
                 with contextlib.suppress(queue.Full):
                     q.put_nowait(message)
 
+    def log(self, session: str | None, line: str, replace: bool = False, kind: str | None = None) -> None:
+        """Stream a terminal line to browsers and keep finished lines in the session's terminal.log."""
+        payload: dict[str, Any] = {"line": line, "replace": replace, "session": session}
+        if kind:
+            payload["kind"] = kind
+        self.emit("log", payload)
+        if session and not replace:
+            self.state.append_terminal(session, line)
+
     def summary(self, job: dict[str, Any]) -> dict[str, Any]:
         keys = ("id", "session", "task_id", "label", "status", "created", "started", "finished",
-                "elapsed", "output", "returncode", "progress", "seed", "argv_display", "error",
-                "preview_latest", "preview_count")  # fmt: skip
-        return {k: job.get(k) for k in keys}
+                "elapsed", "output", "returncode", "seed", "argv_display", "error", "hint",
+                "preview_latest", "preview_count", "estimate_s")  # fmt: skip
+        with self.job_lock:
+            out = {k: job.get(k) for k in keys}
+            out["progress"] = dict(job.get("progress") or {})
+        return out
 
     def queue_state(self) -> list[dict[str, Any]]:
         with self.cond:
@@ -368,13 +666,24 @@ class Runner:
         kind = req.get("output", "mp4")
         stamp = datetime.now().strftime("%m%d-%H%M%S")
         stem = safe_name(req.get("take_name") or req.get("task_id") or "take", "take")
-        if kind == "mp4":
-            output = session / "outputs" / f"{stem}-{stamp}.mp4"
-            argv += ["--output", str(output)]
-        elif kind == "dir":
-            output = session / "outputs" / f"{stem}-{stamp}"
+        if kind in {"mp4", "dir"}:
+            output = self._unique_output(session / "outputs", f"{stem}-{stamp}", ".mp4" if kind == "mp4" else "")
             argv += ["--output", str(output)]
         return argv, output, session
+
+    def _unique_output(self, directory: Path, base: str, suffix: str) -> Path:
+        """``base`` + suffix, numbered when a file or a queued job already claims it.
+
+        Jobs submitted in the same second (Queue 3 seeds) would otherwise share one
+        path and overwrite each other's take.
+        """
+        with self.cond:
+            claimed = {job.get("output") for job in self.jobs.values()}
+        candidate, counter = directory / f"{base}{suffix}", 2
+        while candidate.exists() or str(candidate) in claimed:
+            candidate = directory / f"{base}-{counter}{suffix}"
+            counter += 1
+        return candidate
 
     def submit(self, req: dict[str, Any]) -> dict[str, Any]:
         job_id = uuid.uuid4().hex[:10]
@@ -395,7 +704,8 @@ class Runner:
             "output_kind": req.get("output", "mp4"),
             "params": req.get("params", {}),
             "seed": req.get("seed"),
-            "progress": {"phase": "queued", "step": 0, "total": 0, "stage": 0},
+            "progress": {"phase": "queued", "step": 0, "total": 0, "stage": 0, "stage_key": None},
+            "estimate_s": self.state.estimate(session.name, req.get("params") or {}).get("seconds"),
         }
         with self.cond:
             self.jobs[job["id"]] = job
@@ -437,7 +747,7 @@ class Runner:
                 job["status"], job["error"] = "failed", str(exc)
                 if job.get("preview_dir"):
                     shutil.rmtree(job["preview_dir"], ignore_errors=True)
-                self.emit("log", {"line": f"[studio] job failed to start: {exc}", "replace": False})
+                self.log(job["session"], f"[studio] job failed to start: {exc}", kind="failed")
             finally:
                 with self.cond:
                     self.current = None
@@ -450,7 +760,7 @@ class Runner:
         started = time.monotonic()
         self.emit("job", self.summary(job))
         self.emit("queue", self.queue_state())
-        self.emit("log", {"line": f"$ {job['argv_display']}", "replace": False, "kind": "cmd"})
+        self.log(job["session"], f"$ {job['argv_display']}", kind="cmd")
         env = {**os.environ, "PYTHONUNBUFFERED": "1", "TQDM_MININTERVAL": "0.5"}
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "ltx_pipelines_mlx", *job["argv"]],
@@ -479,7 +789,8 @@ class Runner:
             job["status"] = "done"
         else:
             job["status"] = "failed"
-            job["error"] = next((line for line in reversed(tail) if line.strip()), f"exit code {returncode}")
+            job["error"] = last_error_line(tail, returncode)
+            job["hint"] = hint_for(tail)
         preview_dir = Path(job["preview_dir"]) if job.get("preview_dir") else None
         previews = list_previews(preview_dir) if preview_dir else []
         if job["output_kind"] == "mp4" and produced and output is not None:
@@ -499,9 +810,7 @@ class Runner:
         elif job["output_kind"] == "dir" and produced:
             self.emit("takes", {"session": job["session"]})
         state = job["status"]
-        self.emit(
-            "log", {"line": f"[studio] {job['label']}: {state} in {job['elapsed']}s", "replace": False, "kind": state}
-        )
+        self.log(job["session"], f"[studio] {job['label']}: {state} in {job['elapsed']}s", kind=state)
 
     def _watch_previews(self, job: dict[str, Any], stop: threading.Event) -> None:
         """Push each new stepwise preview to the browser as the pipeline writes it."""
@@ -523,6 +832,7 @@ class Runner:
     def _pump(self, job: dict[str, Any], stream, tail: list[str]) -> None:
         buf = b""
         last_progress = 0.0
+        last_stage = None
         while True:
             chunk = stream.read1(4096) if hasattr(stream, "read1") else stream.read(4096)
             if not chunk:
@@ -538,31 +848,57 @@ class Runner:
                 if not line.strip():
                     continue
                 replace = sep == b"\r"
-                if self._parse(job, line) and time.monotonic() - last_progress > 0.25:
-                    last_progress = time.monotonic()
-                    self.emit("progress", {"id": job["id"], "progress": job["progress"]})
+                with self.job_lock:
+                    changed = self._parse(job, line)
+                    progress = dict(job["progress"])
+                # Stage changes always go out; step ticks are throttled.
+                if changed and (progress.get("stage_key") != last_stage or time.monotonic() - last_progress > 0.25):
+                    last_progress, last_stage = time.monotonic(), progress.get("stage_key")
+                    self.emit("progress", {"id": job["id"], "progress": progress})
                 if not replace:
                     tail.append(line)
                     del tail[:-40]
-                self.emit("log", {"line": line, "replace": replace})
+                self.log(job["session"], line, replace)
         if buf.strip():
             line = buf.decode("utf-8", "replace")
             tail.append(line)
-            self.emit("log", {"line": line, "replace": False})
+            self.log(job["session"], line)
 
     @staticmethod
     def _parse(job: dict[str, Any], line: str) -> bool:
         progress = job["progress"]
         text = line.strip()
+
+        def advance(stage: str) -> None:
+            current = progress.get("stage_key")
+            if current is None or STAGES.index(stage) > STAGES.index(current):
+                progress["stage_key"] = stage
+
+        if m := REMAINING_RE.search(text):
+            seconds = parse_duration(m.group(1))
+            if seconds is not None:
+                # Wall-clock anchor so the browser can count down between updates.
+                progress.update(eta_s=round(seconds), eta_at=time.time())
+            return True
         if m := ESTIMATE_RE.search(text):
             progress["stage"] += 1
             progress.update(phase=f"Denoising · stage {progress['stage']}", step=0, total=int(m.group(2)))
+            progress.pop("eta_s", None)
+            progress.pop("eta_at", None)
+            advance("denoise")
             return True
         if m := TQDM_RE.search(text):
             progress.update(step=int(m.group(3)), total=int(m.group(4)))
             return True
         if m := PHASE_RE.match(text):
             progress.update(phase=m.group(1), step=0, total=0)
+            for pattern, stage in PHASE_STAGES:
+                if pattern.match(m.group(1)):
+                    advance(stage)
+            return True
+        if SAVED_RE.search(text):
+            progress.update(phase="Saved", step=0, total=0)
+            advance("save")
             return True
         if text.startswith("[auto-duration]") or text.startswith("[official-weights]"):
             progress["note"] = text
@@ -782,6 +1118,7 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "ltx-studio"
     state: State
     runner: Runner
+    allowed_hosts: ClassVar[set[str]] = set()
 
     def log_message(self, fmt: str, *args: Any) -> None:  # quiet access log
         return
@@ -792,6 +1129,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -813,11 +1151,22 @@ class Handler(BaseHTTPRequestHandler):
     def _session(self, params: dict[str, Any]) -> str:
         return safe_name(str(params.get("session") or self.state.active), "session-1")
 
+    def _refused(self) -> bool:
+        """Answer and return True when the request fails ``request_guard``."""
+        refusal = request_guard(self.command, self.path, self.headers, self.allowed_hosts)
+        if refusal is None:
+            return False
+        code, message = refusal
+        self._error(message, code)
+        return True
+
     # routes ---------------------------------------------------------------
     def do_HEAD(self) -> None:
         self.do_GET()
 
     def do_GET(self) -> None:
+        if self._refused():
+            return None
         url = urlparse(self.path)
         query = {k: v[0] for k, v in parse_qs(url.query).items()}
         path = url.path
@@ -828,13 +1177,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._static(path[len("/static/") :])
             if path.startswith("/media/"):
                 _, _, session, kind, name = path.split("/", 4)
-                return self._file(self.state.resolve_media(session, kind, name))
+                return self._file(self.state.resolve_media(session, kind, name), download="download" in query)
             if path.startswith("/thumb/"):
                 _, _, session, kind, name = path.split("/", 4)
                 thumb = self.state.thumbnail(session, kind, name)
                 return self._file(thumb) if thumb else self._error("no thumbnail", 404)
             if path.startswith("/sfile/"):
-                return self._file(self.state.resolve_session_path(path[len("/sfile/") :]))
+                return self._file(self.state.resolve_session_path(path[len("/sfile/") :]), download="download" in query)
             if path.startswith("/sthumb/"):
                 thumb = video_thumbnail(self.state.resolve_session_path(path[len("/sthumb/") :]))
                 return self._file(thumb) if thumb else self._error("no thumbnail", 404)
@@ -858,6 +1207,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(items)
             if path == "/api/queue":
                 return self._json(self.runner.queue_state())
+            if path == "/api/terminal":
+                return self._json({"lines": self.state.terminal_tail(self._session(query))})
             return self._error("not found", 404)
         except ValueError as exc:
             return self._error(str(exc))
@@ -867,6 +1218,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(f"{type(exc).__name__}: {exc}", 500)
 
     def do_POST(self) -> None:
+        if self._refused():
+            return None
         url = urlparse(self.path)
         query = {k: v[0] for k, v in parse_qs(url.query).items()}
         path = url.path
@@ -880,6 +1233,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"jobs": jobs})
             if path == "/api/cancel":
                 return self._json({"ok": self.runner.cancel(str(body.get("id")))})
+            if path == "/api/estimate":
+                return self._json(self.state.estimate(session, body.get("params") or {}))
+            if path == "/api/takes/star":
+                return self._json(self.state.set_star(session, str(body.get("name")), bool(body.get("starred"))))
+            if path == "/api/model/check":
+                return self._json(self.state.model_info())
             if path == "/api/model":
                 model = str(body.get("model", "")).strip()
                 if model and not Path(model).expanduser().exists() and "/" not in model:
@@ -954,7 +1313,7 @@ class Handler(BaseHTTPRequestHandler):
             ctype += "; charset=utf-8"
         return self._send(200, target.read_bytes(), ctype)
 
-    def _file(self, target: Path) -> None:
+    def _file(self, target: Path, download: bool = False) -> None:
         if not target.is_file():
             return self._error("not found", 404)
         size = target.stat().st_size
@@ -979,6 +1338,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(end - start + 1))
         self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if download:
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(target.name)}")
         if code == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.end_headers()
@@ -997,7 +1359,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _upload(self, query: dict[str, str]) -> None:
         session = self._session(query)
-        original = Path(unquote(query.get("name", "upload"))).name
+        original = Path(unquote(self.headers.get("X-Filename") or "upload")).name
         stem, suffix = os.path.splitext(original)
         dst = self.state.ensure_session(session) / "inputs" / f"{safe_name(stem, 'upload')}{suffix.lower()}"
         if dst.exists():
@@ -1053,11 +1415,15 @@ def main() -> None:
     parser.add_argument("--gemma", default=os.environ.get("LTX_GEMMA"), help="Gemma 3 repo for LTX-2.3 packs / enhance")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8720)
+    parser.add_argument(
+        "--allow-host", default="", help="extra Host names to accept, comma-separated (IPs and localhost always are)"
+    )
     args = parser.parse_args()
 
     state = State(args.model, args.gemma)
     Handler.state = state
     Handler.runner = Runner(state)
+    Handler.allowed_hosts = {h.strip().lower() for h in [args.host, *args.allow_host.split(",")] if h.strip()}
     httpd = StudioServer((args.host, args.port), Handler)
     print(f"ltx studio on http://{args.host}:{args.port}  (model: {args.model or 'not set'})", flush=True)
     if args.host not in ("127.0.0.1", "localhost", "::1"):
