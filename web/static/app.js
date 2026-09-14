@@ -23,7 +23,8 @@ const S = {
   },
   queue: [],
   selectedTake: null,
-  picked: [],
+  timeline: [],
+  selectedTimeline: null,
   lastLogReplace: false,
   restoring: false,
 };
@@ -486,7 +487,6 @@ async function uploadFiles(files) {
 
 async function loadTakes(selectNewest = false) {
   S.takes = await api(`/api/takes?session=${encodeURIComponent(S.session)}`);
-  S.picked = S.picked.filter((n) => S.takes.some((t) => t.name === n));
   if (selectNewest && S.takes.length) selectTake(S.takes[0].name);
   renderTakes();
 }
@@ -503,97 +503,269 @@ function takeMeta(t) {
   return bits.join(" · ");
 }
 
+function opButton(text, title, fn) {
+  return el("button", { class: "ghost", type: "button", text, title,
+    onclick: async (e) => { e.stopPropagation(); try { await fn(); } catch (err) { flashError(err.message); } } });
+}
+
 function renderTakes() {
   $("takeCount").textContent = S.takes.length ? String(S.takes.length) : "";
-  $("combineBtn").disabled = S.picked.length < 2;
-  $("combineBtn").textContent = S.picked.length >= 2 ? `Combine ${S.picked.length}` : "Combine selected";
   if (!S.takes.length) {
     $("takeList").replaceChildren(el("li", { class: "take-empty", text: "No takes yet in this session." }));
     return;
   }
-  $("takeList").replaceChildren(...S.takes.map((t) => {
-    const op = (text, title, fn) => el("button", { class: "ghost", type: "button", text, title,
-      onclick: async (e) => { e.stopPropagation(); try { await fn(); } catch (err) { flashError(err.message); } } });
-    return el("li", { class: t.name === S.selectedTake ? "on" : "", onclick: () => selectTake(t.name) },
-      el("div", { class: "row" },
-        el("div", { class: "thumb" }, el("img", { src: t.thumb, alt: "", loading: "lazy" })),
-        el("div", { class: "info" },
-          el("div", { class: "nm", text: t.name, title: t.name }),
-          el("div", { class: "meta", text: takeMeta(t) })),
-        el("input", { class: "pick", type: "checkbox", title: "Select for combine", checked: S.picked.includes(t.name),
-          onclick: (e) => e.stopPropagation(),
-          onchange: (e) => {
-            S.picked = e.target.checked ? [...S.picked, t.name] : S.picked.filter((n) => n !== t.name);
-            renderTakes();
-          } })),
-      el("div", { class: "ops" },
-        t.params ? op("Reuse settings", "Restore the task, inputs and settings of this take", async () => restore(t.params)) : null,
-        op("Chain →", "Use the last frame as the start image of Image → Video", async () => {
-          const { name } = await api("/api/frame", { session: S.session, take: t.name, position: "last" });
-          await loadInputs();
-          S.taskId = "i2v";
-          taskValues("i2v").image = name;
-          renderTask();
-          saveSettings();
-        }),
-        op("Last frame", "Add the last frame to inputs", async () => { await api("/api/frame", { session: S.session, take: t.name, position: "last" }); await loadInputs(); }),
-        op("First frame", "Add the first frame to inputs", async () => { await api("/api/frame", { session: S.session, take: t.name, position: "first" }); await loadInputs(); }),
-        op("Use video", "Copy this take into inputs (retake, extend, control)", async () => { await api("/api/use-video", { session: S.session, take: t.name }); await loadInputs(); }),
-        t.probe && t.probe.has_audio ? op("Use audio", "Extract the audio track into inputs", async () => { await api("/api/audio", { session: S.session, take: t.name }); await loadInputs(); }) : null,
-        op("Delete", "Delete this take", async () => {
-          if (!confirm(`Delete ${t.name}?`)) return;
-          await api("/api/takes/delete", { session: S.session, name: t.name });
-          if (S.selectedTake === t.name) selectTake(null);
-          await loadTakes();
-        })));
-  }));
+  $("takeList").replaceChildren(...S.takes.map((t) => el("li", { class: t.name === S.selectedTake ? "on" : "", onclick: () => selectTake(t.name) },
+    el("div", { class: "row" },
+      el("div", { class: "thumb" }, el("img", { src: t.thumb, alt: "", loading: "lazy" })),
+      el("div", { class: "info" },
+        el("div", { class: "nm", text: t.name, title: t.name }),
+        el("div", { class: "meta", text: takeMeta(t) }))),
+    el("div", { class: "ops" },
+      t.params ? opButton("Reuse settings", "Restore the task, inputs and settings of this take", async () => restore(t.params)) : null,
+      opButton("Chain →", "Use the last frame as the start image of Image → Video", async () => {
+        const { name } = await api("/api/frame", { session: S.session, take: t.name, position: "last" });
+        await loadInputs();
+        S.taskId = "i2v";
+        taskValues("i2v").image = name;
+        renderTask();
+        saveSettings();
+      }),
+      opButton("Last frame", "Add the last frame to inputs", async () => { await api("/api/frame", { session: S.session, take: t.name, position: "last" }); await loadInputs(); }),
+      opButton("First frame", "Add the first frame to inputs", async () => { await api("/api/frame", { session: S.session, take: t.name, position: "first" }); await loadInputs(); }),
+      opButton("Use video", "Copy this take into inputs (retake, extend, control)", async () => { await api("/api/use-video", { session: S.session, take: t.name }); await loadInputs(); }),
+      t.probe && t.probe.has_audio ? opButton("Use audio", "Extract the audio track into inputs", async () => { await api("/api/audio", { session: S.session, take: t.name }); await loadInputs(); }) : null,
+      opButton("Delete", "Delete this take", async () => {
+        if (!confirm(`Delete ${t.name}?`)) return;
+        await api("/api/takes/delete", { session: S.session, name: t.name });
+        if (S.selectedTake === t.name) showInViewer(null);
+        await loadTakes();
+      })))));
 }
 
-function selectTake(name) {
-  S.selectedTake = name;
-  const take = S.takes.find((t) => t.name === name);
+function showInViewer(item, caption = "") {
   const player = $("player");
-  if (take) {
-    player.src = take.url;
+  if (item) {
+    player.src = item.url;
     player.classList.add("on");
     $("viewerEmpty").hidden = true;
     $("viewerCaption").hidden = false;
-    const prompt = take.params && take.params.common && take.params.common.prompt;
-    $("viewerCaption").textContent = [take.name, takeMeta(take), prompt ? `“${prompt}”` : ""].filter(Boolean).join("  ·  ");
+    $("viewerCaption").textContent = caption;
   } else {
+    S.selectedTake = null;
+    S.selectedTimeline = null;
     player.removeAttribute("src");
+    player.load();
     player.classList.remove("on");
     $("viewerEmpty").hidden = false;
     $("viewerCaption").hidden = true;
   }
-  document.querySelectorAll("#takeList li").forEach((li, i) => li.classList.toggle("on", S.takes[i] && S.takes[i].name === name));
+  document.querySelectorAll("#takeList li").forEach((li, i) => li.classList.toggle("on", !!S.takes[i] && S.takes[i].name === S.selectedTake));
+  document.querySelectorAll("#timelineList li").forEach((li, i) => li.classList.toggle("on", !!S.timeline[i] && S.timeline[i].name === S.selectedTimeline));
 }
 
-function openCombine() {
-  const order = [...S.picked];
-  const render = () => {
-    $("combineOrder").replaceChildren(...order.map((name, i) => el("li", {},
-      name,
-      el("button", { class: "ghost", type: "button", text: "↑", disabled: i === 0, onclick: () => { [order[i - 1], order[i]] = [order[i], order[i - 1]]; render(); } }),
-      el("button", { class: "ghost", type: "button", text: "↓", disabled: i === order.length - 1, onclick: () => { [order[i + 1], order[i]] = [order[i], order[i + 1]]; render(); } }))));
-  };
-  render();
-  $("combineError").hidden = true;
-  $("combineModal").hidden = false;
-  $("confirmCombine").onclick = async () => {
-    $("confirmCombine").disabled = true;
-    try {
-      await api("/api/combine", { session: S.session, takes: order, name: $("combineName").value });
-      $("combineModal").hidden = true;
-      S.picked = [];
-      await loadTakes(true);
-    } catch (e) {
-      $("combineError").hidden = false;
-      $("combineError").textContent = e.message;
-    } finally {
-      $("confirmCombine").disabled = false;
-    }
-  };
+function selectTake(name) {
+  const take = S.takes.find((t) => t.name === name);
+  S.selectedTake = take ? name : null;
+  S.selectedTimeline = null;
+  if (!take) return showInViewer(null);
+  const prompt = take.params && take.params.common && take.params.common.prompt;
+  showInViewer(take, [take.name, takeMeta(take), prompt ? `“${prompt}”` : ""].filter(Boolean).join("  ·  "));
+}
+
+// ── timeline (combined clips, follows h3 studio) ─────────────────────────
+
+const TL = { seq: [], browse: null, dragFrom: null };
+
+async function loadTimeline(selectName = null) {
+  S.timeline = await api(`/api/timeline?session=${encodeURIComponent(S.session)}`);
+  renderTimelineList();
+  if (selectName) selectTimeline(selectName);
+}
+
+function timelineMeta(t) {
+  const p = t.probe || {};
+  const bits = [];
+  if (t.clips) bits.push(`${t.clips.length} clip${t.clips.length === 1 ? "" : "s"}`);
+  if (p.width) bits.push(`${p.width}×${p.height}`);
+  if (p.duration) bits.push(`${p.duration.toFixed(1)}s`);
+  return bits.join(" · ") || "combined";
+}
+
+function renderTimelineList() {
+  $("timelineCount").textContent = S.timeline.length ? String(S.timeline.length) : "";
+  if (!S.timeline.length) {
+    $("timelineList").replaceChildren(el("li", { class: "take-empty", text: "No combined videos yet. Use Create Timeline above to build one." }));
+    return;
+  }
+  $("timelineList").replaceChildren(...S.timeline.map((t) => el("li", { class: t.name === S.selectedTimeline ? "on" : "", onclick: () => selectTimeline(t.name) },
+    el("div", { class: "row" },
+      el("div", { class: "thumb" }, el("img", { src: t.thumb, alt: "", loading: "lazy" })),
+      el("div", { class: "info" },
+        el("div", { class: "nm", text: t.name, title: (t.clips || []).join("\n") || t.name }),
+        el("div", { class: "meta", text: timelineMeta(t) }))),
+    el("div", { class: "ops" },
+      opButton("Use video", "Copy this combined video into inputs (retake, extend, control)", async () => { await api("/api/use-video", { session: S.session, kind: "timeline", name: t.name }); await loadInputs(); }),
+      opButton("Delete", "Delete this combined video", async () => {
+        if (!confirm(`Delete ${t.name}?`)) return;
+        await api("/api/timeline/delete", { session: S.session, name: t.name });
+        if (S.selectedTimeline === t.name) showInViewer(null);
+        await loadTimeline();
+      })))));
+}
+
+function selectTimeline(name) {
+  const item = S.timeline.find((t) => t.name === name);
+  S.selectedTimeline = item ? name : null;
+  S.selectedTake = null;
+  if (!item) return showInViewer(null);
+  showInViewer(item, [item.name, timelineMeta(item), ...(item.clips || []).map((c, i) => `${i + 1}. ${c}`)].join("  ·  "));
+  $("player").play().catch(() => {});
+}
+
+function openTimelineModal() {
+  TL.seq = [];
+  renderSequence();
+  $("timelineOutputName").value = "";
+  $("timelineRenderStatus").textContent = "";
+  if (S.timeline[0]) showReview(S.timeline[0]);
+  else clearReview();
+  $("timelineModal").hidden = false;
+  browseTo("");
+}
+
+function closeTimelineModal() {
+  $("timelineModal").hidden = true;
+  $("timelineReviewVideo").pause();
+}
+
+function showReview(item) {
+  const video = $("timelineReviewVideo");
+  video.src = item.url;
+  video.load();
+  video.classList.add("on");
+  $("timelineReviewEmpty").hidden = true;
+}
+
+function clearReview() {
+  const video = $("timelineReviewVideo");
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+  video.classList.remove("on");
+  $("timelineReviewEmpty").hidden = false;
+}
+
+async function browseTo(path) {
+  try {
+    TL.browse = await api(`/api/timeline/browse?session=${encodeURIComponent(S.session)}&path=${encodeURIComponent(path)}`);
+  } catch (e) {
+    $("timelineRenderStatus").textContent = e.message;
+    return;
+  }
+  renderBreadcrumb();
+  renderBrowser();
+}
+
+function renderBreadcrumb() {
+  const crumbs = [el("button", { type: "button", text: "sessions", onclick: () => browseTo(".") })];
+  let acc = "";
+  for (const part of TL.browse.path === "." ? [] : TL.browse.path.split("/").filter(Boolean)) {
+    acc = acc ? `${acc}/${part}` : part;
+    const target = acc;
+    crumbs.push(el("span", { class: "sep", text: "/" }), el("button", { type: "button", text: part, onclick: () => browseTo(target) }));
+  }
+  $("timelineBreadcrumb").replaceChildren(...crumbs);
+}
+
+function renderBrowser() {
+  const data = TL.browse;
+  const items = [];
+  if (data.parent !== null && data.parent !== undefined) {
+    items.push(el("div", { class: "browse-dir", onclick: () => browseTo(data.parent) }, el("div", { class: "icon", text: "⬅" }), el("div", { class: "nm", text: ".." })));
+  }
+  for (const d of data.dirs) {
+    items.push(el("div", { class: "browse-dir", onclick: () => browseTo(d.path) }, el("div", { class: "icon", text: "📁" }), el("div", { class: "nm", text: d.name })));
+  }
+  for (const f of data.files) {
+    const count = TL.seq.filter((c) => c.path === f.path).length;
+    const meta = [f.duration ? `${f.duration.toFixed(2)}s` : "", f.width ? `${f.width}×${f.height}` : ""].filter(Boolean).join(" · ");
+    items.push(el("div", { class: `browse-file${count ? " selected" : ""}`, title: f.path, onclick: () => addClip(f) },
+      el("div", { class: "thumb" }, el("img", { src: f.thumb, alt: "", loading: "lazy" })),
+      el("div", { class: "nm", text: f.name }),
+      el("div", { class: "meta", text: meta }),
+      count ? el("div", { class: "pickcount", text: String(count) }) : null));
+  }
+  if (!data.dirs.length && !data.files.length) items.push(el("div", { class: "browser-empty", text: "No videos in this directory." }));
+  $("timelineBrowserList").replaceChildren(...items);
+}
+
+function addClip(f) {
+  TL.seq.push({ path: f.path, name: f.name, duration: f.duration, thumb: f.thumb });
+  renderSequence();
+  renderBrowser();
+}
+
+function removeClip(index) {
+  TL.seq.splice(index, 1);
+  renderSequence();
+  if (TL.browse) renderBrowser();
+}
+
+function reorderClip(from, to) {
+  if (from === to || from === null || to === null) return;
+  const [moved] = TL.seq.splice(from, 1);
+  TL.seq.splice(to, 0, moved);
+  renderSequence();
+}
+
+function renderSequence() {
+  const track = $("timelineTrack");
+  $("timelinePlaceholder").hidden = TL.seq.length > 0;
+  const total = TL.seq.reduce((sum, c) => sum + (c.duration || 0), 0);
+  $("timelineQueueTotal").textContent = TL.seq.length ? `${TL.seq.length} · ${total.toFixed(1)}s` : "";
+  const nodes = TL.seq.map((item, index) => {
+    const node = el("div", { class: "timeline-item", draggable: "true" },
+      el("div", { class: "drag-handle", text: "⠿" }),
+      el("div", { class: "seq", text: String(index + 1) }),
+      el("img", { src: item.thumb, alt: "" }),
+      el("div", { class: "info" },
+        el("div", { class: "nm", text: item.name, title: item.path }),
+        el("div", { class: "meta", text: item.duration ? `${item.duration.toFixed(2)}s` : "" })),
+      el("button", { class: "remove", type: "button", text: "✕", title: "Remove from queue", onclick: () => removeClip(index) }));
+    node.addEventListener("dragstart", (e) => { TL.dragFrom = index; node.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(index)); });
+    node.addEventListener("dragend", () => { node.classList.remove("dragging"); TL.dragFrom = null; [...track.children].forEach((c) => c.classList.remove("drag-over")); });
+    node.addEventListener("dragover", (e) => { if (TL.dragFrom === null) return; e.preventDefault(); e.dataTransfer.dropEffect = "move"; node.classList.add("drag-over"); });
+    node.addEventListener("dragleave", () => node.classList.remove("drag-over"));
+    node.addEventListener("drop", (e) => { e.preventDefault(); node.classList.remove("drag-over"); reorderClip(TL.dragFrom, index); });
+    return node;
+  });
+  nodes.push(el("div", { class: "timeline-add-slot", text: TL.seq.length ? "+ pick another clip on the left" : "+ pick a clip on the left to start" }));
+  track.replaceChildren(...nodes);
+  $("renderTimeline").disabled = TL.seq.length === 0;
+}
+
+async function combineTimeline() {
+  if (!TL.seq.length) return;
+  const clips = TL.seq.map((c) => c.path);
+  $("renderTimeline").disabled = true;
+  $("timelineRenderStatus").textContent = `Combining ${clips.length} clip${clips.length > 1 ? "s" : ""}…`;
+  appendLog(`$ combine ${clips.join(" + ")}`, false, "cmd");
+  try {
+    const { name } = await api("/api/timeline/render", { session: S.session, clips, name: $("timelineOutputName").value.trim() });
+    appendLog(`[studio] combined video saved as timeline/${name}`, false, "done");
+    $("timelineRenderStatus").textContent = `Saved ${name}`;
+    await loadTimeline();
+    const item = S.timeline.find((t) => t.name === name);
+    if (item) { showReview(item); $("timelineReviewVideo").play().catch(() => {}); }
+    TL.seq = [];
+    renderSequence();
+    if (TL.browse) renderBrowser();
+  } catch (e) {
+    appendLog(`[studio] combine failed: ${e.message}`, false, "failed");
+    $("timelineRenderStatus").textContent = `Failed: ${e.message}`;
+  } finally {
+    $("renderTimeline").disabled = TL.seq.length === 0;
+  }
 }
 
 // ── queue, progress, terminal ────────────────────────────────────────────
@@ -654,6 +826,7 @@ function connectEvents() {
       if (idx >= 0) { S.queue[idx] = data; renderQueue(S.queue); }
       if (data.status === "failed" && data.error) flashError(`${data.label} failed: ${data.error}`);
     } else if (type === "takes" && data.session === S.session) loadTakes(true);
+    else if (type === "timeline" && data.session === S.session) loadTimeline();
   };
   es.onerror = () => { $("lampText").textContent = "reconnecting…"; };
 }
@@ -665,12 +838,12 @@ async function activateSession(name) {
   S.session = res.name;
   S.values = {};
   S.selectedTake = null;
-  S.picked = [];
+  S.selectedTimeline = null;
   const cfg = await api("/api/sessions");
   S.sessions = cfg.sessions;
   renderSessions();
-  selectTake(null);
-  await Promise.all([loadInputs(), loadTakes()]);
+  showInViewer(null);
+  await Promise.all([loadInputs(), loadTakes(), loadTimeline()]);
   restore(res.settings);
   if (!res.settings || !res.settings.taskId) { syncCommonInputs(); renderTask(); }
 }
@@ -769,8 +942,10 @@ function bindChrome() {
   $("renderBtn").addEventListener("click", () => submit(1));
   $("queueSeedsBtn").addEventListener("click", () => submit(3));
   $("clearLog").addEventListener("click", () => { $("terminalOutput").replaceChildren(); S.lastLogReplace = false; });
-  $("combineBtn").addEventListener("click", openCombine);
-  $("cancelCombine").addEventListener("click", () => { $("combineModal").hidden = true; });
+  $("timelineButton").addEventListener("click", openTimelineModal);
+  $("closeTimeline").addEventListener("click", closeTimelineModal);
+  $("clearTimeline").addEventListener("click", () => { TL.seq = []; renderSequence(); if (TL.browse) renderBrowser(); });
+  $("renderTimeline").addEventListener("click", combineTimeline);
 
   $("sessionSelect").addEventListener("change", (e) => activateSession(e.target.value));
   $("newSession").addEventListener("click", () => openSessionModal("new"));
@@ -809,7 +984,7 @@ function bindChrome() {
   document.querySelectorAll("#themeSwitch button").forEach((b) => b.addEventListener("click", () => setTheme(b.dataset.theme)));
   document.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submit(1);
-    if (e.key === "Escape") document.querySelectorAll(".modal").forEach((m) => { m.hidden = true; });
+    if (e.key === "Escape") { document.querySelectorAll(".modal").forEach((m) => { m.hidden = true; }); $("timelineReviewVideo").pause(); }
   });
 }
 
@@ -831,7 +1006,7 @@ async function init() {
   const cfg = await api("/api/config");
   S.sessions = cfg.sessions;
   applyModel(cfg.model);
-  if (!cfg.ffmpeg) appendLog("[studio] ffmpeg not found on PATH — frame/audio extraction and combine are disabled.", false, "failed");
+  if (!cfg.ffmpeg) appendLog("[studio] ffmpeg not found on PATH — frame/audio extraction, thumbnails and the timeline are disabled.", false, "failed");
   connectEvents();
   await activateSession(cfg.active);
   if (!cfg.model.configured) $("modelButton").click();

@@ -88,3 +88,45 @@ def test_progress_parsing():
 
 def test_ffprobe_missing_file_is_empty(tmp_path: Path):
     assert server.ffprobe(tmp_path / "nope.mp4") == {}
+
+
+def test_session_root_paths_cannot_escape(state):
+    root = server.SESSIONS_DIR.resolve()
+    assert state.resolve_session_path("session-1/outputs") == root / "session-1" / "outputs"
+    assert state.resolve_session_path("") == root
+    for bad in ("../secrets", "session-1/../../etc/passwd", "%2e%2e/etc"):
+        with pytest.raises(ValueError):
+            state.resolve_session_path(bad)
+
+
+def test_browse_timeline(state):
+    outputs = state.ensure_session("session-1") / "outputs"
+    (outputs / "take.mp4").write_bytes(b"")
+    (outputs / "notes.txt").write_text("not a clip")
+    (outputs / ".thumbs").mkdir()
+    (outputs / "preprocessed").mkdir()
+
+    default = server.browse_timeline(state, "session-1", "")
+    assert default["path"] == "session-1/outputs" and default["parent"] == "session-1"
+    assert [f["name"] for f in default["files"]] == ["take.mp4"]
+    assert default["files"][0]["url"] == "/sfile/session-1/outputs/take.mp4"
+    assert [d["name"] for d in default["dirs"]] == ["preprocessed"]
+
+    root = server.browse_timeline(state, "session-1", ".")
+    assert root["path"] == "." and root["parent"] is None
+    assert [d["name"] for d in root["dirs"]] == ["session-1"]
+
+    session = server.browse_timeline(state, "session-1", "session-1")
+    assert session["parent"] == "."
+    with pytest.raises(ValueError):
+        server.browse_timeline(state, "session-1", "../..")
+
+
+def test_combine_timeline_validates_clips(state):
+    with pytest.raises(ValueError, match="at least one"):
+        server.combine_timeline(state, "session-1", [], "x")
+    state.ensure_session("session-1")
+    with pytest.raises(ValueError):
+        server.combine_timeline(state, "session-1", ["session-1/outputs/missing.mp4"], "x")
+    with pytest.raises(ValueError):
+        server.combine_timeline(state, "session-1", ["../../etc/passwd"], "x")

@@ -69,8 +69,27 @@ a sample path — edit it in `.vscode/launch.json`, or use "custom paths".
 5. Every take appears on the right with its settings. From a take you can
    **Reuse settings**, **Chain →** (last frame becomes the start image of
    Image → Video), pull its first/last frame, the video itself (for retake,
-   extend or control) or its audio (for audio → video) into inputs, or select
-   several and **Combine** them into one clip.
+   extend or control) or its audio (for audio → video) into inputs.
+
+## Timeline
+
+**Create Timeline** opens a full-screen editor for joining clips into one
+video:
+
+- **Browse** (left) — starts in the current session's `outputs/`; the
+  breadcrumb walks up to `sessions` and into any session's `outputs/`,
+  `timeline/` or `inputs/`. Click a clip to append it to the queue; a clip can
+  be added more than once (the badge counts uses).
+- **Queue** (middle) — numbered in play order with the running total length.
+  Drag to reorder, ✕ to remove, **Clear** to start over.
+- **Combined result** (right) — name the output and **Combine**. ffmpeg
+  letterboxes every clip onto the largest width/height in the queue, resamples
+  to 24 fps, adds silence for clips without audio, and writes
+  `timeline/<name>.mp4` plus a `.json` sidecar listing the source clips. The
+  result plays here and appears in the **Timeline** list under Takes.
+
+Source clips are only read, never modified. A combined video can be pulled
+back into inputs with **Use video** (e.g. to extend it).
 
 ## Sessions
 
@@ -79,6 +98,7 @@ web/sessions/<name>/
   setting.json   task, prompt and all form values — saved as you edit
   inputs/        uploads, extracted frames/audio, takes reused as inputs
   outputs/       rendered .mp4 takes, each with a .json sidecar (params, argv, probe)
+  timeline/      combined videos, each with a .json sidecar (source clips, probe)
 ```
 
 Switch, create, duplicate or delete sessions from the top bar; the last one is

@@ -12,6 +12,7 @@ Sessions are plain directories:
         setting.json   UI state, saved while you edit
         inputs/        uploads and media pulled back from takes
         outputs/       rendered .mp4 takes, each with a .json sidecar
+        timeline/      combined videos from the timeline editor, each with a .json sidecar
 
 Usage:
     uv run python web/server.py --model /path/to/model [--port 8720] [--host 127.0.0.1]
@@ -56,7 +57,8 @@ GEMMA_COMMANDS = MODEL_COMMANDS - {"info"} | {"enhance"}
 QUANTIZE_COMMANDS = {"generate", "a2v", "retake", "extend", "keyframe", "ic-lora", "hdr-ic-lora", "lipdub"}
 SERVER_OWNED_FLAGS = {"--output", "-o", "--model", "-m", "--gemma", "--quantize-on-load"}
 
-MEDIA_KINDS = {"inputs", "outputs"}
+MEDIA_KINDS = {"inputs", "outputs", "timeline"}
+VIDEO_EXTS = {".mp4", ".mov"}
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -132,6 +134,33 @@ def ffprobe(path: Path) -> dict[str, Any]:
     return info
 
 
+def video_thumbnail(src: Path) -> Path | None:
+    """A cached 320px JPEG poster for a video (``.thumbs/<name>.jpg`` next to it), made on demand."""
+    if not src.is_file():
+        return None
+    thumb = src.parent / ".thumbs" / f"{src.name}.jpg"
+    if thumb.exists() and thumb.stat().st_mtime >= src.stat().st_mtime:
+        return thumb
+    if not which("ffmpeg"):
+        return None
+    thumb.parent.mkdir(exist_ok=True)
+    result = subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-y", "-ss", "0.1", "-i", str(src), "-frames:v", "1",
+         "-vf", "scale=320:-2", str(thumb)],
+        capture_output=True, timeout=30,
+    )  # fmt: skip
+    return thumb if result.returncode == 0 and thumb.exists() else None
+
+
+def cached_probe(path: Path) -> dict[str, Any]:
+    """Probe via an existing sidecar (take/timeline ``x.json`` or input ``x.mp4.json``) before calling ffprobe."""
+    for sidecar in (path.with_suffix(".json"), path.with_suffix(path.suffix + ".json")):
+        probe = read_json(sidecar, {}).get("probe") if sidecar.exists() else None
+        if probe:
+            return probe
+    return ffprobe(path)
+
+
 def media_kind(name: str) -> str:
     mime = mimetypes.guess_type(name)[0] or ""
     if name.lower().endswith((".safetensors", ".yaml", ".yml", ".txt", ".json")):
@@ -167,8 +196,8 @@ class State:
 
     def ensure_session(self, name: str) -> Path:
         path = self.session_dir(name)
-        (path / "inputs").mkdir(parents=True, exist_ok=True)
-        (path / "outputs").mkdir(parents=True, exist_ok=True)
+        for kind in MEDIA_KINDS:
+            (path / kind).mkdir(parents=True, exist_ok=True)
         return path
 
     def sessions(self) -> list[str]:
@@ -205,20 +234,15 @@ class State:
         return path
 
     def thumbnail(self, session: str, kind: str, name: str) -> Path | None:
-        """A cached 320px JPEG poster for a video (``<kind>/.thumbs/<name>.jpg``), made on demand."""
-        src = self.resolve_media(session, kind, name)
-        thumb = src.parent / ".thumbs" / f"{src.name}.jpg"
-        if thumb.exists() and thumb.stat().st_mtime >= src.stat().st_mtime:
-            return thumb
-        if not which("ffmpeg") or not src.is_file():
-            return None
-        thumb.parent.mkdir(exist_ok=True)
-        result = subprocess.run(
-            ["ffmpeg", "-loglevel", "error", "-y", "-ss", "0.1", "-i", str(src), "-frames:v", "1",
-             "-vf", "scale=320:-2", str(thumb)],
-            capture_output=True, timeout=30,
-        )  # fmt: skip
-        return thumb if result.returncode == 0 and thumb.exists() else None
+        return video_thumbnail(self.resolve_media(session, kind, name))
+
+    def resolve_session_path(self, rel: str) -> Path:
+        """Resolve a path relative to the sessions root, refusing anything that escapes it."""
+        root = SESSIONS_DIR.resolve()
+        path = (root / unquote(rel).lstrip("/")).resolve()
+        if path != root and root not in path.parents:
+            raise ValueError("path escapes the sessions directory")
+        return path
 
     def list_media(self, session: str, kind: str) -> list[dict[str, Any]]:
         base = self.ensure_session(session) / kind
@@ -517,10 +541,15 @@ def _stop(proc: subprocess.Popen) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _ffmpeg(*argv: str) -> None:
+def _ffmpeg(*argv: str, timeout: float = 120) -> None:
     if not which("ffmpeg"):
         raise ValueError("ffmpeg is not on PATH")
-    result = subprocess.run(["ffmpeg", "-loglevel", "error", "-y", *argv], capture_output=True, text=True)
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-loglevel", "error", "-y", *argv], capture_output=True, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError(f"ffmpeg timed out after {timeout:.0f}s") from exc
     if result.returncode != 0:
         raise ValueError(result.stderr.strip() or "ffmpeg failed")
 
@@ -542,38 +571,112 @@ def extract_audio(state: State, session: str, take: str) -> dict[str, Any]:
     return {"name": dst.name}
 
 
-def take_to_input(state: State, session: str, take: str) -> dict[str, Any]:
-    src = state.resolve_media(session, "outputs", take)
+def media_to_input(state: State, session: str, kind: str, name: str) -> dict[str, Any]:
+    src = state.resolve_media(session, kind, name)
     dst = state.session_dir(session) / "inputs" / src.name
+    if dst.exists():
+        dst = dst.with_name(f"{dst.stem}-{uuid.uuid4().hex[:4]}{dst.suffix}")
     shutil.copy2(src, dst)
     return {"name": dst.name}
 
 
-def combine_takes(state: State, session: str, takes: list[str], name: str) -> dict[str, Any]:
-    if len(takes) < 2:
-        raise ValueError("pick at least two takes to combine")
-    sources = [state.resolve_media(session, "outputs", t) for t in takes]
-    dims = [(p.get("width"), p.get("height")) for p in (ffprobe(s) for s in sources)]
-    width = max((w or 0) for w, _ in dims) or 704
-    height = max((h or 0) for _, h in dims) or 448
+# ---------------------------------------------------------------------------
+# timeline: browse clips across sessions, combine them into one video
+# ---------------------------------------------------------------------------
+
+
+def _rel(path: Path) -> str:
+    return path.resolve().relative_to(SESSIONS_DIR.resolve()).as_posix()
+
+
+def browse_timeline(state: State, session: str, rel: str) -> dict[str, Any]:
+    """List folders and video clips under the sessions root.
+
+    ``rel == ""`` opens the current session's outputs, ``"."`` the sessions
+    root, anything else is a path relative to the sessions root.
+    """
+    if rel == "":
+        target = state.ensure_session(session) / "outputs"
+    elif rel == ".":
+        target = SESSIONS_DIR.resolve()
+    else:
+        target = state.resolve_session_path(rel)
+    if not target.is_dir():
+        raise ValueError("directory not found")
+    root = SESSIONS_DIR.resolve()
+    dirs, files = [], []
+    for entry in sorted(target.iterdir(), key=lambda p: p.name):
+        if entry.name.startswith("."):
+            continue
+        if entry.is_dir():
+            dirs.append({"name": entry.name, "path": _rel(entry)})
+        elif entry.suffix.lower() in VIDEO_EXTS:
+            rel_path = _rel(entry)
+            probe = cached_probe(entry)
+            files.append({
+                "name": entry.name, "path": rel_path, "size": entry.stat().st_size, "mtime": entry.stat().st_mtime,
+                "duration": probe.get("duration"), "width": probe.get("width"), "height": probe.get("height"),
+                "url": f"/sfile/{rel_path}", "thumb": f"/sthumb/{rel_path}?v={int(entry.stat().st_mtime)}",
+            })  # fmt: skip
+    resolved = target.resolve()
+    return {
+        "path": "." if resolved == root else _rel(resolved),
+        "parent": None if resolved == root else ("." if resolved.parent == root else _rel(resolved.parent)),
+        "dirs": dirs,
+        "files": files,
+    }
+
+
+def combine_timeline(state: State, session: str, clips: list[str], name: str) -> dict[str, Any]:
+    """Concatenate clips (paths relative to the sessions root) into ``<session>/timeline/<name>.mp4``.
+
+    Clips are letterboxed onto the largest canvas, resampled to 24 fps, and clips
+    without audio get matching silence so the audio track stays continuous. Sources
+    are only read, never modified.
+    """
+    if not clips:
+        raise ValueError("pick at least one clip")
+    if not which("ffmpeg"):
+        raise ValueError("ffmpeg is not on PATH")
+    sources = []
+    for rel in clips:
+        path = state.resolve_session_path(rel)
+        if not path.is_file() or path.suffix.lower() not in VIDEO_EXTS:
+            raise ValueError(f"not a video clip: {rel}")
+        sources.append((path, ffprobe(path)))
+    width = max((p.get("width") or 0) for _, p in sources) or 704
+    height = max((p.get("height") or 0) for _, p in sources) or 448
     width, height = width + width % 2, height + height % 2
-    all_audio = all(ffprobe(s).get("has_audio") for s in sources)
-    out = state.session_dir(session) / "outputs" / f"{safe_name(name, 'timeline')}-{datetime.now():%m%d-%H%M%S}.mp4"
-    inputs: list[str] = []
-    filters: list[str] = []
-    for i, src in enumerate(sources):
-        inputs += ["-i", str(src)]
+
+    out_dir = state.ensure_session(session) / "timeline"
+    stem = safe_name(name, f"timeline-{datetime.now():%m%d-%H%M%S}")
+    out = out_dir / f"{stem}.mp4"
+    counter = 1
+    while out.exists():
+        out = out_dir / f"{stem}-{counter}.mp4"
+        counter += 1
+
+    args: list[str] = []
+    for path, _ in sources:
+        args += ["-i", str(path)]
+    silent: dict[int, int] = {}
+    for i, (_, probe) in enumerate(sources):
+        if not probe.get("has_audio"):
+            silent[i] = len(sources) + len(silent)
+            args += ["-f", "lavfi", "-t", f"{probe.get('duration') or 1:.3f}", "-i", "anullsrc=r=48000:cl=stereo"]
+    filters, refs = [], ""
+    for i in range(len(sources)):
         filters.append(
             f"[{i}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24[v{i}]"
         )
-    joined = "".join(f"[v{i}]" + (f"[{i}:a]" if all_audio else "") for i in range(len(sources)))
-    concat = f"{joined}concat=n={len(sources)}:v=1:a={1 if all_audio else 0}[v]" + ("[a]" if all_audio else "")
-    maps = ["-map", "[v]"] + (["-map", "[a]"] if all_audio else [])
-    _ffmpeg(*inputs, "-filter_complex", ";".join([*filters, concat]), *maps,
-            "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", str(out))  # fmt: skip
-    write_json(out.with_suffix(".json"), {"task_id": "combine", "label": "Timeline", "created": now_iso(),
-                                          "params": {"takes": takes}, "probe": ffprobe(out)})  # fmt: skip
+        filters.append(f"[{silent.get(i, i)}:a]aformat=sample_rates=48000:channel_layouts=stereo[a{i}]")
+        refs += f"[v{i}][a{i}]"
+    filters.append(f"{refs}concat=n={len(sources)}:v=1:a=1[vout][aout]")
+    _ffmpeg(*args, "-filter_complex", ";".join(filters), "-map", "[vout]", "-map", "[aout]",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k", str(out), timeout=600)  # fmt: skip
+    write_json(out.with_suffix(".json"), {"clips": clips, "created": now_iso(), "probe": ffprobe(out)})
     return {"name": out.name}
 
 
@@ -637,6 +740,15 @@ class Handler(BaseHTTPRequestHandler):
                 _, _, session, kind, name = path.split("/", 4)
                 thumb = self.state.thumbnail(session, kind, name)
                 return self._file(thumb) if thumb else self._error("no thumbnail", 404)
+            if path.startswith("/sfile/"):
+                return self._file(self.state.resolve_session_path(path[len("/sfile/") :]))
+            if path.startswith("/sthumb/"):
+                thumb = video_thumbnail(self.state.resolve_session_path(path[len("/sthumb/") :]))
+                return self._file(thumb) if thumb else self._error("no thumbnail", 404)
+            if path == "/api/timeline":
+                return self._json(self.state.list_media(self._session(query), "timeline"))
+            if path == "/api/timeline/browse":
+                return self._json(browse_timeline(self.state, self._session(query), query.get("path", "")))
             if path == "/api/events":
                 return self._events()
             if path == "/api/config":
@@ -715,9 +827,17 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/audio":
                 return self._json(extract_audio(self.state, session, str(body["take"])))
             if path == "/api/use-video":
-                return self._json(take_to_input(self.state, session, str(body["take"])))
-            if path == "/api/combine":
-                return self._json(combine_takes(self.state, session, list(body.get("takes", [])), body.get("name", "")))
+                kind = body.get("kind", "outputs")
+                return self._json(media_to_input(self.state, session, kind, str(body.get("name") or body["take"])))
+            if path == "/api/timeline/render":
+                result = combine_timeline(self.state, session, list(body.get("clips", [])), str(body.get("name", "")))
+                self.runner.emit("timeline", {"session": session, "name": result["name"]})
+                return self._json(result)
+            if path == "/api/timeline/delete":
+                target = self.state.resolve_media(session, "timeline", str(body.get("name")))
+                target.unlink(missing_ok=True)
+                target.with_suffix(".json").unlink(missing_ok=True)
+                return self._json({"ok": True})
             return self._error("not found", 404)
         except (ValueError, KeyError) as exc:
             return self._error(str(exc))
