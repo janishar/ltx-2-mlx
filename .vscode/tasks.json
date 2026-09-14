@@ -1,0 +1,40 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "run: ltx studio",
+      "type": "shell",
+      "command": "bash",
+      "args": ["web/run.sh", "--model", "/Users/janisharali/GenAI/ltx/models/ltx-2.5", "--port", "8720"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "setup: uv sync",
+      "type": "shell",
+      "command": "uv",
+      "args": ["sync", "--all-extras"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "test: fast suite",
+      "type": "shell",
+      "command": "uv",
+      "args": ["run", "pytest", "-q", "-m", "not slow"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "lint: ruff",
+      "type": "shell",
+      "command": "uv",
+      "args": ["run", "ruff", "check", "."],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": []
+    }
+  ]
+}

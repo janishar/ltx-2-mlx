@@ -1,0 +1,153 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "ltx studio (dev)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/web/server.py",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "cwd": "${workspaceFolder}",
+      "args": [
+        "--model",
+        "/Users/janisharali/GenAI/ltx/models/ltx-2.5",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8720"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "ltx studio (custom paths)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/web/server.py",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "cwd": "${workspaceFolder}",
+      "args": [
+        "--model",
+        "${input:modelPath}",
+        "--gemma",
+        "${input:gemmaRepo}",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "${input:port}"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "ltx studio (debug - step into ltx packages)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/web/server.py",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "cwd": "${workspaceFolder}",
+      "args": [
+        "--model",
+        "/Users/janisharali/GenAI/ltx/models/ltx-2.5",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8720"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "ltx studio (LAN - 0.0.0.0, no auth)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/web/server.py",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "cwd": "${workspaceFolder}",
+      "args": [
+        "--model",
+        "/Users/janisharali/GenAI/ltx/models/ltx-2.5",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8720"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "ltx-run: modes (what the model can run)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/ltx_run.py",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "cwd": "${workspaceFolder}",
+      "args": ["modes", "--model", "${input:modelPath}"],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "ltx-2-mlx: generate (prompt)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "ltx_pipelines_mlx",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "cwd": "${workspaceFolder}",
+      "args": [
+        "generate",
+        "--distilled",
+        "--model",
+        "${input:modelPath}",
+        "--prompt",
+        "${input:prompt}",
+        "--frames",
+        "49",
+        "--frame-rate",
+        "24",
+        "--seed",
+        "42",
+        "--output",
+        "${workspaceFolder}/outputs/vscode-generate.mp4"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "pytest: fast suite",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "cwd": "${workspaceFolder}",
+      "args": ["-q", "-m", "not slow"],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ],
+  "inputs": [
+    {
+      "id": "modelPath",
+      "type": "promptString",
+      "description": "Model: mlx-forge pack dir, official LTX-2.5 dir, or Hugging Face repo",
+      "default": "/Users/janisharali/GenAI/ltx/models/ltx-2.5"
+    },
+    {
+      "id": "gemmaRepo",
+      "type": "promptString",
+      "description": "Gemma 3 repo (LTX-2.3 packs and prompt enhance)",
+      "default": "mlx-community/gemma-3-12b-it-4bit"
+    },
+    {
+      "id": "port",
+      "type": "promptString",
+      "description": "Port",
+      "default": "8720"
+    },
+    {
+      "id": "prompt",
+      "type": "promptString",
+      "description": "Prompt",
+      "default": "A golden retriever runs along a sunlit beach toward the camera, waves breaking behind it."
+    }
+  ]
+}
