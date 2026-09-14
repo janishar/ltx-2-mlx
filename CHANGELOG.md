@@ -26,8 +26,18 @@ for per-pipeline stability guarantees.
   viewer while denoising, configurable interval, clip length and position, with
   a per-take preview scrubber.
 - VS Code launch, task and settings configurations.
+- **Generated keyframe slots** (`generate --num-generated-keyframes N`, LTX-2.5),
+  synced from upstream ltx-2-mlx 0.15.5: N evenly spaced single-pixel-frame slots
+  denoised with stage 1, on all four generate modes; refused before any Gemma load
+  on packs without `use_keyframes_abs_pos_embedding`.
 
 ### Changed
+
+- LTX-2.5 renders now apply the learned keyframe absolute-position embedding to
+  the first latent frame (synced from upstream 0.15.5). It was loaded but never
+  applied, so 2.5 output was slightly off the reference on frame 0; 2.5 outputs
+  shift, 2.3 output is unchanged. Also applies to the official LTX-2.5 files
+  converted on load.
 
 - The CLI no longer defaults to a hosted model: `--model` falls back to
   `$LTX_MODEL` and exits with an error when neither is set.
