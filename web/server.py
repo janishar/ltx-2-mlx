@@ -419,13 +419,24 @@ class Runner:
         kind = req.get("output", "mp4")
         stamp = datetime.now().strftime("%m%d-%H%M%S")
         stem = safe_name(req.get("take_name") or req.get("task_id") or "take", "take")
-        if kind == "mp4":
-            output = session / "outputs" / f"{stem}-{stamp}.mp4"
-            argv += ["--output", str(output)]
-        elif kind == "dir":
-            output = session / "outputs" / f"{stem}-{stamp}"
+        if kind in {"mp4", "dir"}:
+            output = self._unique_output(session / "outputs", f"{stem}-{stamp}", ".mp4" if kind == "mp4" else "")
             argv += ["--output", str(output)]
         return argv, output, session
+
+    def _unique_output(self, directory: Path, base: str, suffix: str) -> Path:
+        """``base`` + suffix, numbered when a file or a queued job already claims it.
+
+        Jobs submitted in the same second (Queue 3 seeds) would otherwise share one
+        path and overwrite each other's take.
+        """
+        with self.cond:
+            claimed = {job.get("output") for job in self.jobs.values()}
+        candidate, counter = directory / f"{base}{suffix}", 2
+        while candidate.exists() or str(candidate) in claimed:
+            candidate = directory / f"{base}-{counter}{suffix}"
+            counter += 1
+        return candidate
 
     def submit(self, req: dict[str, Any]) -> dict[str, Any]:
         job_id = uuid.uuid4().hex[:10]

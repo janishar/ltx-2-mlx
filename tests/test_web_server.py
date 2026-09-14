@@ -26,6 +26,13 @@ def state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def runner(state):
     r = server.Runner.__new__(server.Runner)  # no worker thread
     r.state = state
+    r.jobs, r.pending, r.current = {}, [], None
+    r.cond, r.job_lock, r.sub_lock, r.subscribers = (
+        server.threading.Condition(),
+        server.threading.Lock(),
+        server.threading.Lock(),
+        [],
+    )
     return r
 
 
@@ -193,3 +200,11 @@ def test_request_guard_blocks_rebinding_and_cross_site():
     assert guard("POST", "/api/session/delete", {"Host": "127.0.0.1:8720"}, allowed)[0] == 415
     assert guard("POST", "/api/upload?session=s", {"Host": "127.0.0.1:8720"}, allowed)[0] == 400
     assert guard("POST", "/api/upload?session=s", {"Host": "127.0.0.1:8720", "X-Filename": "a.png"}, allowed) is None
+
+
+def test_jobs_submitted_together_get_distinct_outputs(state, runner):
+    """Queue 3 seeds submits in the same second; each take needs its own file."""
+    req = {"session": "session-1", "subcommand": "generate", "task_id": "t2v", "args": ["--prompt", "x"]}
+    outputs = [runner.submit({**req, "seed": seed})["output"] for seed in (1, 2, 3)]
+    assert len(set(outputs)) == 3
+    assert all(Path(o).parent == state.session_dir("session-1") / "outputs" for o in outputs)
