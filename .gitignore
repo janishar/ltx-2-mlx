@@ -53,11 +53,6 @@ node_modules/
 
 # IDE / editor
 .idea/
-.vscode/*
-!.vscode/launch.json
-!.vscode/tasks.json
-!.vscode/settings.json
-!.vscode/extensions.json
 *.swp
 
 # Run outputs (trainer default output dir, stepwise previews, HDR frames, logs)
