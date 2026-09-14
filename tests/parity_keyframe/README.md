@@ -16,15 +16,22 @@ decoder forward** (2026-05-06 investigation).
 
 ## How to run
 
-PT side (in upstream `Lightricks/LTX-2` checkout):
+Environment:
+
+- `LTX_REFERENCE_DIR` — a checkout of upstream `Lightricks/LTX-2` with its venv.
+- `LTX_MLX_REPO` — this repository.
+- `LTX_TEST_MODEL_DIR` — an LTX-2.3 int8 MLX pack (VAE, upscaler, embedded config).
+- `LTX_PARITY_BF16_PACK_DIR` — an LTX-2.3 bf16 MLX pack (`transformer-dev.safetensors`, T2/T8).
+
+PT side (in the upstream checkout):
 
 ```bash
-cd /Users/dgrauet/sandbox/ltx-reference
-uv run python /Users/dgrauet/Work/mlx/ports/ltx-2-mlx/tests/parity_keyframe/dump_pt.py
-uv run python /Users/dgrauet/Work/mlx/ports/ltx-2-mlx/tests/parity_keyframe/dump_pt_sampler.py
-uv run python /Users/dgrauet/Work/mlx/ports/ltx-2-mlx/tests/parity_keyframe/T1_dump_pt_vae_encoder.py
-uv run python /Users/dgrauet/Work/mlx/ports/ltx-2-mlx/tests/parity_keyframe/T2_dump_pt_adaln.py
-uv run python /Users/dgrauet/Work/mlx/ports/ltx-2-mlx/tests/parity_keyframe/T5_dump_pt_vae_decoder.py
+cd "$LTX_REFERENCE_DIR"
+uv run python "$LTX_MLX_REPO"/tests/parity_keyframe/dump_pt.py
+uv run python "$LTX_MLX_REPO"/tests/parity_keyframe/dump_pt_sampler.py
+uv run python "$LTX_MLX_REPO"/tests/parity_keyframe/T1_dump_pt_vae_encoder.py
+uv run python "$LTX_MLX_REPO"/tests/parity_keyframe/T2_dump_pt_adaln.py
+uv run python "$LTX_MLX_REPO"/tests/parity_keyframe/T5_dump_pt_vae_decoder.py
 ```
 
 MLX side (in this repo):
@@ -44,8 +51,8 @@ the VAE decoder bug is fixed.
 ## Weight setup
 
 PT and MLX share the same bf16 weights from
-`dgrauet/ltx-2.3-mlx-q8/vae_{encoder,decoder}.safetensors` and
-`dgrauet/ltx-2.3-mlx/transformer-dev.safetensors`. PT side strips the
+`$LTX_TEST_MODEL_DIR/vae_{encoder,decoder}.safetensors` and
+`$LTX_PARITY_BF16_PACK_DIR/transformer-dev.safetensors`. PT side strips the
 MLX prefix and transposes Conv3d weights `(O, K_t, K_h, K_w, I)` ->
 `(O, I, K_t, K_h, K_w)`. The full upstream
 `Lightricks/LTX-2/ltx-2.3-22b-dev.safetensors` is also cached but

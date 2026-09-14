@@ -221,7 +221,7 @@ def _normalize_cross_attn_projections(raw: dict[str, mx.array]) -> None:
 
     * **fused** -- torch ``nn.MultiheadAttention``'s ``in_proj_weight``
       ``(3*hidden, hidden)`` / ``in_proj_bias`` ``(3*hidden,)``, as shipped by
-      the ``dgrauet/ltx-2.5-mlx*`` packs. Split along axis 0 into q, k, v.
+      mlx-forge converted packs. Split along axis 0 into q, k, v.
     * **split** -- ``{q,k,v}_proj.{weight,bias}`` already separated, as shipped
       by ``mlx-community/ltx-2.5-mlx``. Passed through untouched.
 

@@ -54,7 +54,7 @@ class TestCliWiring:
             raise RuntimeError(WATCHDOG_MSG)
 
         monkeypatch.setattr(cli, "_cmd_info", _boom)
-        monkeypatch.setattr("sys.argv", ["ltx-2-mlx", "info"])
+        monkeypatch.setattr("sys.argv", ["ltx-2-mlx", "info", "--model", "/models/pack"])
 
         with pytest.raises(SystemExit) as exc_info:
             cli.main()
@@ -72,7 +72,7 @@ class TestCliWiring:
             raise RuntimeError("out of memory")
 
         monkeypatch.setattr(cli, "_cmd_info", _boom)
-        monkeypatch.setattr("sys.argv", ["ltx-2-mlx", "info"])
+        monkeypatch.setattr("sys.argv", ["ltx-2-mlx", "info", "--model", "/models/pack"])
 
         with pytest.raises(RuntimeError, match="out of memory"):
             cli.main()

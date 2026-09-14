@@ -14,10 +14,7 @@ from ltx_core_mlx.model.video_vae.sampling import pixel_shuffle_3d
 from ltx_core_mlx.model.video_vae.video_vae import VideoDecoder, unpatchify_spatial
 from ltx_core_mlx.utils.weights import load_split_safetensors
 
-WEIGHTS = os.path.expanduser(
-    "~/.cache/huggingface/hub/models--dgrauet--ltx-2.3-mlx-q8/"
-    "snapshots/03da129baa459c9a70fc5858dee52fa417b3a93d/vae_decoder.safetensors"
-)
+WEIGHTS = os.path.join(os.path.expanduser(os.environ.get("LTX_TEST_MODEL_DIR", "")), "vae_decoder.safetensors")
 PT = "/tmp/T6_decoder_stages_pt.npz"
 
 

@@ -364,7 +364,7 @@ class BasePipeline:
             raise FileNotFoundError(
                 f"Dev transformer not found: {dev_path}\n"
                 "This pipeline requires the dev model for CFG guidance.\n"
-                "Use: --model dgrauet/ltx-2.3-mlx-q8"
+                "Pass --model a model with the dev transformer (the official LTX-2.5 dev file, or an MLX pack with transformer-dev.safetensors)."
             )
         return self._load_transformer_with_optional_streaming(dev_path)
 

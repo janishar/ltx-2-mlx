@@ -7,6 +7,8 @@ drift).
 
 from __future__ import annotations
 
+import os
+
 SEED = 9803402
 
 PROMPT = (
@@ -21,7 +23,7 @@ PROMPT = (
 )
 
 NEG_PROMPT = ""
-MODEL = "dgrauet/ltx-2.3-mlx-q8"
+MODEL = os.environ.get("LTX_TEST_MODEL_DIR", "")  # LTX-2.3 int8 MLX pack
 FPS = 24
 
 GEN_HEIGHT, GEN_WIDTH, GEN_FRAMES = 480, 704, 33

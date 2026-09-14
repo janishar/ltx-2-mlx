@@ -19,9 +19,8 @@ PT_WEIGHTS = os.path.expanduser(
     "~/.cache/huggingface/hub/models--Lightricks--LTX-2.3/"
     "snapshots/76730e634e70a28f4e8d51f5e29c08e40e2d8e74/ltx-2.3-22b-dev.safetensors"
 )
-MLX_WEIGHTS = os.path.expanduser(
-    "~/.cache/huggingface/hub/models--dgrauet--ltx-2.3-mlx/"
-    "snapshots/baa5f235ea04fd9c95899d751295c4fd825ee4e2/transformer-dev.safetensors"
+MLX_WEIGHTS = os.path.join(
+    os.path.expanduser(os.environ.get("LTX_PARITY_BF16_PACK_DIR", "")), "transformer-dev.safetensors"
 )
 PT = "/tmp/T8_transformer_pt.npz"
 

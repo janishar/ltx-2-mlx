@@ -82,8 +82,8 @@ class DistilledPipeline(TI2VidTwoStagesPipeline):
 
     Args:
         model_dir: Path to model weights or HuggingFace repo ID. Must
-            contain the distilled checkpoint (e.g. ``dgrauet/ltx-2.3-mlx-q8``
-            ships ``transformer-distilled.safetensors``).
+            contain the distilled checkpoint (``transformer-distilled.safetensors``
+            in an MLX pack, or the official LTX-2.5 distilled file).
         gemma_model_id: Gemma model for text encoding.
         low_memory: Aggressive memory management.
         low_ram_streaming: Stream transformer blocks from disk.

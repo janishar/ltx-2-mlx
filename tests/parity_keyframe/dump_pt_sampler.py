@@ -6,8 +6,8 @@ a controlled (mock) denoised output. Verifies that:
   - EulerDiffusionStep.step preserves clean tokens (mask=0) bit-exactly
 
 Run from upstream venv:
-    cd /Users/dgrauet/sandbox/ltx-reference
-    uv run python /Users/dgrauet/Work/mlx/ports/ltx-2-mlx/tests/parity_keyframe/dump_pt_sampler.py
+    cd "$LTX_REFERENCE_DIR"  # Lightricks/LTX-2 checkout
+    uv run python "$LTX_MLX_REPO"/tests/parity_keyframe/dump_pt_sampler.py
 """
 
 from __future__ import annotations

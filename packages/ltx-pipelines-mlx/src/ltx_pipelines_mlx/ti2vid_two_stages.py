@@ -4,7 +4,7 @@ Matches the reference architecture:
   Stage 1: Dev (non-distilled) model + CFG guidance at half resolution.
   Stage 2: Dev + distilled LoRA fused, simple denoising at full resolution.
 
-Requires the dev model + distilled LoRA weights (e.g. dgrauet/ltx-2.3-mlx-q8).
+Requires the dev model + distilled LoRA weights.
 
 Ported from ltx-pipelines/src/ltx_pipelines/ti2vid_two_stages.py
 """
@@ -180,7 +180,7 @@ class TI2VidTwoStagesPipeline(BasePipeline):
             raise FileNotFoundError(
                 f"Distilled LoRA not found: {lora_path}\n"
                 "Two-stage requires the distilled LoRA for Stage 2.\n"
-                "Use: --model dgrauet/ltx-2.3-mlx-q8"
+                "Pass --model an MLX pack that includes the distilled LoRA."
             )
         lora_raw = dict(mx.load(str(lora_path)))
         lora_remapped = _remap_lora_keys(lora_raw)
@@ -230,7 +230,7 @@ class TI2VidTwoStagesPipeline(BasePipeline):
                     f"Pre-fused distilled transformer not found in {self.model_dir} "
                     "(expected transformer-distilled*.safetensors). "
                     "low_ram_streaming for two-stage at LoRA strength 1.0 requires "
-                    "the distilled file. Use: --model dgrauet/ltx-2.3-mlx-q8"
+                    "the distilled file; pass --model an MLX pack that includes it."
                 )
             new_streamer = BlockStreamer(distilled_path, block_prefix="transformer.transformer_blocks.")
             old_streamer = object.__getattribute__(self.dit, "_streamer")
@@ -245,7 +245,7 @@ class TI2VidTwoStagesPipeline(BasePipeline):
             raise FileNotFoundError(
                 f"Distilled LoRA not found at {lora_path}. "
                 "low_ram_streaming with a non-default LoRA strength requires "
-                "the LoRA safetensors. Use: --model dgrauet/ltx-2.3-mlx-q8"
+                "the LoRA safetensors; pass --model an MLX pack that includes it."
             )
         lora_source = BlockLoraSource(
             lora_path,
@@ -294,9 +294,8 @@ class TI2VidTwoStagesPipeline(BasePipeline):
                 "The two-stage and "
                 "distilled pipelines require it for stage-2 upscaling; without "
                 "it the latent is upscaled by an untrained module and the "
-                "output degrades into a periodic 'mosaic' grid. Download it, "
-                "e.g.: hf download dgrauet/ltx-2.3-mlx-q8 "
-                f"{expected} --local-dir {self.model_dir}"
+                "output degrades into a periodic 'mosaic' grid. Add "
+                f"{expected} (or the official LTX-2.5 spatial upscaler) to {self.model_dir}."
             )
         return weights_path
 

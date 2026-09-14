@@ -16,9 +16,8 @@ from mlx_arsenal.diffusion import get_timestep_embedding
 
 from ltx_core_mlx.model.transformer.adaln import AdaLayerNormSingle
 
-MLX_WEIGHTS = os.path.expanduser(
-    "~/.cache/huggingface/hub/models--dgrauet--ltx-2.3-mlx/snapshots/"
-    "baa5f235ea04fd9c95899d751295c4fd825ee4e2/transformer-dev.safetensors"
+MLX_WEIGHTS = os.path.join(
+    os.path.expanduser(os.environ.get("LTX_PARITY_BF16_PACK_DIR", "")), "transformer-dev.safetensors"
 )
 PT = "/tmp/T2_adaln_pt.npz"
 TIMESTEP_SCALE = 1000.0

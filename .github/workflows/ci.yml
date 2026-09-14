@@ -76,17 +76,8 @@ jobs:
       # exceeds 10 min, so a GPU-side hang leaves a usable trace in the log.
       - run: uv run pytest tests/ -v -m "not slow" --tb=short -o faulthandler_timeout=600
 
-  # Lints the pull request TITLE, not the individual commits.
-  #
-  # Squash is the only merge method, and `squash_merge_commit_title` is
-  # PR_TITLE, so the PR title is the subject that lands on main and the one
-  # release-please reads to pick a version bump. The commits inside a PR are
-  # discarded by the squash, so requiring conventional-commit subjects on them
-  # asked contributors to reword messages that never reach the history the rule
-  # exists to protect -- see the #83 thread.
-  #
-  # The push branch is a backstop: on main the squashed subject is the PR title,
-  # so linting it catches anything that reached main another way.
+  # Lints the pull request TITLE (and, on main, the pushed commit) so the
+  # history on main keeps conventional-commit subjects (feat:, fix:, docs:, ...).
   commitlint:
     runs-on: ubuntu-latest
     steps:

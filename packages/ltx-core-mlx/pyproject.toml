@@ -8,7 +8,7 @@ version = "0.15.4"
 description = "LTX-2.3 model library ported to MLX for Apple Silicon"
 license = "MIT"
 requires-python = ">=3.11"
-authors = [{ name = "dgrauet" }]
+authors = [{ name = "Janishar Ali" }]
 keywords = ["mlx", "video-generation", "diffusion", "apple-silicon", "ltx"]
 classifiers = [
     "Development Status :: 3 - Alpha",

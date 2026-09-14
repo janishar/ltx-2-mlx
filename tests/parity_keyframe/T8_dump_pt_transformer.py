@@ -5,8 +5,8 @@ keyframe-conditioned input shape. Only loads weights for block 0 +
 adaln + finale + connector etc. — about ~1.5 GB instead of 22 GB.
 
 Run from upstream venv:
-    cd /Users/dgrauet/sandbox/ltx-reference
-    uv run python /Users/dgrauet/Work/mlx/ports/ltx-2-mlx/tests/parity_keyframe/T8_dump_pt_transformer.py
+    cd "$LTX_REFERENCE_DIR"  # Lightricks/LTX-2 checkout
+    uv run python "$LTX_MLX_REPO"/tests/parity_keyframe/T8_dump_pt_transformer.py
 """
 
 from __future__ import annotations
@@ -27,10 +27,7 @@ PT_WEIGHTS = os.path.expanduser(
     "~/.cache/huggingface/hub/models--Lightricks--LTX-2.3/"
     "snapshots/76730e634e70a28f4e8d51f5e29c08e40e2d8e74/ltx-2.3-22b-dev.safetensors"
 )
-EMBEDDED_CFG = os.path.expanduser(
-    "~/.cache/huggingface/hub/models--dgrauet--ltx-2.3-mlx-q8/"
-    "snapshots/03da129baa459c9a70fc5858dee52fa417b3a93d/embedded_config.json"
-)
+EMBEDDED_CFG = os.path.join(os.path.expanduser(os.environ.get("LTX_TEST_MODEL_DIR", "")), "embedded_config.json")
 WEIGHT_PREFIX = "model.diffusion_model."
 
 

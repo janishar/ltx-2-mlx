@@ -1,8 +1,8 @@
 """Dump upstream PT VideoConditionByKeyframeIndex outputs for 3 test cases.
 
 Run from inside the upstream venv:
-    cd /Users/dgrauet/sandbox/ltx-reference
-    uv run python /Users/dgrauet/Work/mlx/ports/ltx-2-mlx/tests/parity_keyframe/dump_pt.py
+    cd "$LTX_REFERENCE_DIR"  # Lightricks/LTX-2 checkout
+    uv run python "$LTX_MLX_REPO"/tests/parity_keyframe/dump_pt.py
 
 Saves /tmp/keyframe_parity_pt.npz with:
     case{i}_positions       (B, 3, N, 2)  — upstream raw [start, end]

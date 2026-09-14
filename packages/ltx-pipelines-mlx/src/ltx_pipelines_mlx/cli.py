@@ -11,9 +11,12 @@ Usage:
     ltx-2-mlx keyframe --prompt "transition" --start img1.png --end img2.png -o kf.mp4
     ltx-2-mlx ic-lora --prompt "scene" --lora lora.safetensors 1.0 --video-conditioning depth.mp4 1.0 -o out.mp4
     ltx-2-mlx enhance --prompt "a cat walking" --mode t2v
-    ltx-2-mlx info --model dgrauet/ltx-2.3-mlx-q8
+    ltx-2-mlx info --model /path/to/model
     ltx-2-mlx train --config training_config.yaml
-    ltx-2-mlx preprocess --videos ./my_videos --model dgrauet/ltx-2.3-mlx-q8 -o ./preprocessed
+    ltx-2-mlx preprocess --videos ./my_videos --model /path/to/model -o ./preprocessed
+
+--model (or the LTX_MODEL environment variable) is a directory of the official
+Lightricks LTX-2.5 files, an MLX pack directory, or a Hugging Face repo id.
 """
 
 from __future__ import annotations
@@ -29,7 +32,8 @@ from ltx_pipelines_mlx.utils.stepwise import DEFAULT_PREVIEW_FRAMES
 if TYPE_CHECKING:
     from ltx_pipelines_mlx.utils.types import AutoDuration
 
-DEFAULT_MODEL = "dgrauet/ltx-2.3-mlx-q8"
+MODEL_ENV = "LTX_MODEL"
+MODEL_HELP = "official LTX-2.5 files directory, MLX pack directory or Hugging Face repo id"
 DEFAULT_GEMMA = "mlx-community/gemma-3-12b-it-4bit"
 
 
@@ -38,7 +42,7 @@ def _add_base_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--prompt", "-p", required=True, help="Text prompt")
     parser.add_argument("--output", "-o", required=True, help="Output video path (.mp4)")
     parser.add_argument(
-        "--model", "-m", default=DEFAULT_MODEL, help=f"Model weights (HF repo or path, default: {DEFAULT_MODEL})"
+        "--model", "-m", default=os.environ.get(MODEL_ENV), help=f"Model weights: {MODEL_HELP} (default: ${MODEL_ENV})"
     )
     parser.add_argument(
         "--quantize-on-load",
@@ -322,7 +326,7 @@ def _build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(
         prog="ltx-2-mlx",
-        description="LTX-2.3 video generation on Apple Silicon (MLX)",
+        description="LTX-2.5 / LTX-2.3 video generation on Apple Silicon (MLX)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 examples:
@@ -335,7 +339,7 @@ examples:
   ltx-2-mlx keyframe --prompt "transition" --start img1.png --end img2.png -o out.mp4
   ltx-2-mlx ic-lora --prompt "scene" --lora lora.safetensors 1.0 --video-conditioning depth.mp4 1.0 -o out.mp4
   ltx-2-mlx enhance --prompt "a cat walking" --mode t2v
-  ltx-2-mlx info --model dgrauet/ltx-2.3-mlx-q4
+  ltx-2-mlx info --model /path/to/model
 """,
     )
     sub = parser.add_subparsers(dest="command")
@@ -783,7 +787,9 @@ examples:
 
     # --- info ---
     info = sub.add_parser("info", help="Show model info and memory estimate")
-    info.add_argument("--model", "-m", default=DEFAULT_MODEL, help="Model weights (HF repo or path)")
+    info.add_argument(
+        "--model", "-m", default=os.environ.get(MODEL_ENV), help=f"Model weights: {MODEL_HELP} (default: ${MODEL_ENV})"
+    )
 
     # --- train ---
     trn = sub.add_parser("train", help="Train a LoRA or full model (requires ltx-trainer-mlx)")
@@ -799,7 +805,10 @@ examples:
     pre.add_argument("--videos", "-v", required=True, help="Directory containing video files (mp4/mov/avi)")
     pre.add_argument("--output", "-o", required=True, help="Output directory for preprocessed data")
     pre.add_argument(
-        "--model", "-m", default=DEFAULT_MODEL, help=f"Model weights for VAE encoding (default: {DEFAULT_MODEL})"
+        "--model",
+        "-m",
+        default=os.environ.get(MODEL_ENV),
+        help=f"Model weights for VAE encoding: {MODEL_HELP} (default: ${MODEL_ENV})",
     )
     pre.add_argument("--gemma", default=DEFAULT_GEMMA, help=f"Gemma model for text encoding (default: {DEFAULT_GEMMA})")
     pre.add_argument("--height", "-H", type=int, default=None, help="Resize height (default: keep original)")
@@ -863,6 +872,9 @@ def main() -> None:
     if args.command is None:
         parser.print_help()
         sys.exit(1)
+
+    if hasattr(args, "model") and not args.model:
+        parser.error(f"--model is required (or set {MODEL_ENV}): {MODEL_HELP}")
 
     # Read by loader.official_pack when --model is a directory of official weights.
     if getattr(args, "quantize_on_load", None) is not None:

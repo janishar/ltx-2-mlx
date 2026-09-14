@@ -11,14 +11,8 @@ import torch
 from ltx_core.model.video_vae.enums import NormLayerType, PaddingModeType
 from ltx_core.model.video_vae.video_vae import VideoDecoder
 
-WEIGHTS = os.path.expanduser(
-    "~/.cache/huggingface/hub/models--dgrauet--ltx-2.3-mlx-q8/"
-    "snapshots/03da129baa459c9a70fc5858dee52fa417b3a93d/vae_decoder.safetensors"
-)
-EMBEDDED_CFG = os.path.expanduser(
-    "~/.cache/huggingface/hub/models--dgrauet--ltx-2.3-mlx-q8/"
-    "snapshots/03da129baa459c9a70fc5858dee52fa417b3a93d/embedded_config.json"
-)
+WEIGHTS = os.path.join(os.path.expanduser(os.environ.get("LTX_TEST_MODEL_DIR", "")), "vae_decoder.safetensors")
+EMBEDDED_CFG = os.path.join(os.path.expanduser(os.environ.get("LTX_TEST_MODEL_DIR", "")), "embedded_config.json")
 
 
 def load_pt_state_dict() -> dict:

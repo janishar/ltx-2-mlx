@@ -8,7 +8,14 @@ Pure MLX port of [LTX-2](https://github.com/Lightricks/LTX-2/) (Lightricks) for 
 - **ltx-pipelines-mlx** (`ltx_pipelines_mlx`) — generation pipelines: T2V, I2V, retake, extend, keyframe, IC-LoRA, two-stage
 - **ltx-trainer** (`ltx_trainer_mlx`) - ltx-2 training, democratized.
 
-Loads pre-converted MLX weights from the [LTX-2.3](https://huggingface.co/collections/dgrauet/ltx-23) and [LTX 2.5](https://huggingface.co/collections/dgrauet/ltx-25-6a90c410ff65a75f8aeae402) MLX collections on HuggingFace. Weight conversion is handled by [mlx-forge](https://github.com/dgrauet/mlx-forge).
+Standalone fork: https://github.com/janishar/ltx-2-mlx. Loads the **official Lightricks LTX-2.5 files** directly (converted and quantized in memory, see Critical Rule 4) or MLX-converted packs (mlx-forge layout) for LTX-2.3 / LTX-2.5. There is no built-in default model: `--model` or `$LTX_MODEL`.
+
+Fork additions on top of the port:
+
+- `ltx_core_mlx/loader/official_pack.py` — official-weights virtual packs (`--quantize-on-load {8,4,none}`)
+- `scripts/ltx_run.py` — mode launcher with a model capability check
+- `web/` — **ltx studio**, stdlib-only local web UI (sessions, queue, takes, timeline, optional live preview); see `web/README.md`
+- `.vscode/` — launch / tasks / settings
 
 ---
 
@@ -170,23 +177,19 @@ Audio tokens per video: `round(num_pixel_frames / fps * 25)` where 25 = sample_r
 
 ## Weight Format
 
-Weights are pre-converted by [mlx-forge](https://github.com/dgrauet/mlx-forge) and hosted on HuggingFace. This package only **loads** weights — it never converts them.
+Two sources load: the **official Lightricks LTX-2.5 files** (converted in memory on load — see Critical Rule 4) and **MLX-converted packs** in the mlx-forge layout described below. There is no default model; nothing is downloaded unless `--model` is a Hugging Face repo id.
 
-### Available Variants
+### Pack Variants
 
-| Variant | HuggingFace | Size | Notes |
-|---------|-------------|------|-------|
-| bf16 | [dgrauet/ltx-2.3-mlx](https://huggingface.co/dgrauet/ltx-2.3-mlx) | ~42GB | Full precision, fits 32GB with `--low-ram`, 64GB+ otherwise. For >4s HD or 1080p: stack with `--tile-spatial 2`. |
-| int8 | [dgrauet/ltx-2.3-mlx-q8](https://huggingface.co/dgrauet/ltx-2.3-mlx-q8) | ~26GB | Recommended for 32GB+; fits 16GB with `--low-ram`. Stack with tiling for HD on Mac Studio. |
-| int4 | [dgrauet/ltx-2.3-mlx-q4](https://huggingface.co/dgrauet/ltx-2.3-mlx-q4) | ~12GB | Lower quality, fits 16GB |
+MLX-converted packs come in three precisions:
 
-LTX-2.5 packs (same variant semantics; carry the Gemma-4 text tower, conv VAE pair and DurationHead):
+| Variant | LTX-2.3 size | LTX-2.5 size | Notes |
+|---------|--------------|--------------|-------|
+| bf16 | ~42GB | ~120GB | Full precision. 2.3 fits 32GB with `--low-ram`, 64GB+ otherwise; 2.5 needs `--low-ram` on 32GB. For >4s HD or 1080p: stack with `--tile-spatial 2`. |
+| int8 | ~26GB | ~75GB | Recommended; 2.3 fits 16GB with `--low-ram`. |
+| int4 | ~12GB | ~47GB | Lower quality. |
 
-| Variant | HuggingFace | Size | Notes |
-|---------|-------------|------|-------|
-| bf16 | [dgrauet/ltx-2.5-mlx](https://huggingface.co/dgrauet/ltx-2.5-mlx) | ~120GB | Full precision (dev + distilled + Gemma-4 in bf16); needs `--low-ram` on 32GB |
-| int8 | [dgrauet/ltx-2.5-mlx-q8](https://huggingface.co/dgrauet/ltx-2.5-mlx-q8) | ~75GB | Recommended; validated e2e on all 2.5 pipelines |
-| int4 | [dgrauet/ltx-2.5-mlx-q4](https://huggingface.co/dgrauet/ltx-2.5-mlx-q4) | ~47GB | Lower quality; validated (contracts + deterministic distilled render, ~97s/render) |
+LTX-2.5 packs carry the Gemma-4 text tower, conv VAE pair and DurationHead. The official LTX-2.5 files quantize the same way on load (`--quantize-on-load 8` ≈ int8 pack) without `--low-ram` support.
 
 ### MLX Layout Conventions
 
@@ -283,7 +286,7 @@ Key reference paths:
 
 ### 4. No Weight Conversion in This Package
 
-Weight conversion is handled by [mlx-forge](https://github.com/dgrauet/mlx-forge). This package loads pre-converted weights only.
+Weight conversion for packs is done by mlx-forge, outside this repo. The runtime loads pre-converted weights only.
 
 **Exception — official LTX-2.5 files** (`ltx_core_mlx/loader/official_pack.py`): when `--model` is a directory of the official Lightricks files, `resolve_model_dir` builds a *virtual pack* in `<repo>/.cache/virtual-packs/` (configs, tokenizer assets, and header-only placeholder `.safetensors` files whose metadata names the source). `load_split_safetensors` converts placeholders in memory using mlx-forge's rules (vendored, not reimplemented) and quantizes per `--quantize-on-load {8,4,none}` (env `LTX_MLX_QUANTIZE_ON_LOAD`). Nothing converted is written to disk. Keep those rules in sync with mlx-forge's `recipes/ltx_25.py` and bump `VIRTUAL_PACK_FORMAT` when they change. Not supported on virtual packs: `--low-ram` (BlockStreamer reads the file directly).
 
@@ -382,14 +385,14 @@ All pipelines except one-stage T2V/I2V use the dev model with CFG guidance. Comm
 ```bash
 # bf16 inference on a 32 GB Mac via block streaming
 ltx-2-mlx generate \
-  --model dgrauet/ltx-2.3-mlx \
+  --model /path/to/ltx-2.3-pack-bf16 \
   --prompt "a fox in the forest" \
   --low-ram \
   -H 480 -W 704 -f 33 -o fox.mp4
 
 # q8 inference fits 16 GB Macs (2.3 packs require -f explicitly — no DurationHead)
 ltx-2-mlx generate \
-  --model dgrauet/ltx-2.3-mlx-q8 \
+  --model /path/to/ltx-2.3-pack-q8 \
   --prompt "a fox in the forest" \
   --low-ram -f 97 -o fox.mp4
 ```
@@ -469,7 +472,7 @@ Outputs both `out.mp4` (SDR preview, tonemapped) and `out.hdr.npz` (float32 `(F,
 ### Two-Stage Example
 
 ```bash
-# Two-stage with Euler sampler (auto-selects q8 model; -f required on 2.3 packs)
+# Two-stage with Euler sampler (model from $LTX_MODEL; -f required on 2.3 packs)
 ltx-2-mlx generate \
   --prompt "a scene description" \
   --two-stage -f 97 -o output.mp4
@@ -575,7 +578,7 @@ Flags: `--steps` (default 30), `--cfg-scale` (default 3.0), `--stg-scale` (defau
 ltx-2-mlx preprocess \
   --videos ./my_training_videos \
   --captions ./my_captions \
-  --model dgrauet/ltx-2.3-mlx-q8 \
+  --model /path/to/ltx-2.3-pack-q8 \
   -o ./preprocessed_data
 
 # 2. Train LoRA from YAML config
@@ -635,7 +638,7 @@ Two-stage pipeline requiring the dev (non-distilled) model + CFG. The distilled 
 
 ## Two-Stage Pipeline (T2V / I2V)
 
-Two-stage pipeline for higher-resolution generation. Requires the dev model + distilled LoRA (`dgrauet/ltx-2.3-mlx-q8`).
+Two-stage pipeline for higher-resolution generation. Requires the dev model + distilled LoRA (an int8 pack ships both).
 
 ### Architecture (matching reference)
 
@@ -999,7 +1002,7 @@ ltx-2-mlx generate --model /path/to/ltx-2.5-mlx-q8 --distilled \
   --auto-duration 2:4 -o out.mp4
 
 # 2.3: -f is required — this fails fast with no Gemma/network activity
-ltx-2-mlx generate --model dgrauet/ltx-2.3-mlx-q8 --distilled \
+ltx-2-mlx generate --model /path/to/ltx-2.3-pack-q8 --distilled \
   -p "a heavy wooden door creaks slowly open" -H 512 -W 512 --frame-rate 24 -o out.mp4
 # ValueError: num_frames was AutoDuration but this checkpoint has no DurationHead
 # weights to auto-predict duration from (DurationHead ships from LTX 2.5 / gemma4
@@ -1105,96 +1108,50 @@ The fix that actually unblocked production-quality generation was `1a30f74`: eve
 
 ## Release Process
 
-The project is pre-1.0 (`0.x.y`). Under that scheme the `0.y` segment serves
-as the major version: **breaking changes bump `y`, strictly additive changes
-bump `z`**. This is documented at the top of [CHANGELOG.md](CHANGELOG.md)
-and applies to every consumer of the package.
+The project is pre-1.0 (`0.x.y`): **breaking changes bump `y`, strictly
+additive changes bump `z`** (documented at the top of [CHANGELOG.md](CHANGELOG.md)).
 
-### Branch & PR discipline
+### Branch workflow
 
-- `main` is **protected**: PR required, CI green required (`lint` +
-  `syntax` strict, plus `test (3.11)` / `test (3.12)` / `commitlint`),
-  no force-push, no deletion. Direct push is blocked.
-- One PR = one logical concern. Split mixed work into multiple PRs so
-  each carries a coherent version bump (see PR #8/#9/#10 splitting the
-  upstream PR #212 sync into additive / default-changes / new-pipeline).
-- PR titles use conventional-commits prefixes (`feat:`, `fix:`,
-  `chore:`, `refactor:`, `docs:`). `commitlint` enforces this.
+- Work on a feature branch (`feat/...`, `fix/...`, `chore/...`, `docs/...`);
+  merge into `main` once the fast suite and lint pass.
+- Commit subjects use conventional-commits prefixes (`feat:`, `fix:`,
+  `chore:`, `refactor:`, `docs:`); CI runs `commitlint` on pull request titles
+  and on pushes to `main`.
 
 ### Versioning rules
 
-| Change type | Bump | Example |
-|---|---|---|
-| New pipeline (additive) | `z` | `0.12.0 → 0.12.1` (LipDub) |
-| New helper / primitive (additive) | `z` | `0.11.0 → 0.11.1` (diffusion_steps) |
-| Internal refactor, public API unchanged | `z` | `0.11.0 → 0.11.1` (ic_lora delegation) |
-| Default value change (potentially breaking for callers relying on defaults) | `y` | `0.11.1 → 0.12.0` (TilingConfig / rope defaults) |
-| Removal / signature change | `y` | `0.9.x → 0.10.0` (ImageToVideoPipeline removal) |
+| Change type | Bump |
+|---|---|
+| New pipeline, helper or studio feature (additive) | `z` |
+| Internal refactor, public API unchanged | `z` |
+| Default value change (potentially breaking for callers relying on defaults) | `y` |
+| Removal / signature change | `y` |
 
-### Release artifacts (automated via release-please)
+### Cutting a release (manual)
 
-Releases are driven by **release-please** (`.github/workflows/release-please.yml`),
-mirroring the setup in mlx-forge and smeltr. You no longer hand-bump versions or
-hand-cut tags — you just merge conventional-commit feature PRs into `main`.
-
-The flow:
-
-1. **Merge feature PRs** into `main` with conventional-commit subjects
-   (`feat:` → `z` bump, `fix:` → `z` bump, `feat!:`/`fix!:` → `y` bump). The
-   bump rules in the table above still hold; release-please derives them from
-   the commit type. `commitlint` enforces the prefixes.
-2. **release-please opens / updates a `chore(main): release X.Y.Z` PR**
-   automatically on every push to `main`. It aggregates the unreleased commits
-   into the `CHANGELOG.md` entry and bumps the version in all four pyprojects:
-   the workspace root via the `python` release-type, and the three
-   sub-packages (`ltx-core-mlx`, `ltx-pipelines-mlx`, `ltx-trainer`) via the
-   `extra-files` TOML `$.project.version` entries in `release-please-config.json`.
-   All four stay in sync by construction.
-3. **`relock-on-release.yml` resyncs `uv.lock`** on that release PR
-   (gated to the Bot-authored `release-please--` branch), so the lockfile
-   always matches the released version — this is what the 0.14.12 release
-   missed by hand.
-4. **Merging the release PR** makes release-please push the annotated
-   `vX.Y.Z` tag on the merge commit **and** create the GitHub Release with the
-   CHANGELOG section as notes. No manual `git tag` / `gh release` step.
-
-The release PR is authored by the release GitHub App (`RELEASE_APP_ID` /
-`RELEASE_APP_PRIVATE_KEY` secrets), not the default `GITHUB_TOKEN`, so its PR
-triggers CI and the relock workflow (a default-token push cannot trigger other
-workflows). `.release-please-manifest.json` tracks the last released version;
-do not edit it by hand.
-
-**Manual fallback** (only if release-please is broken): bump the four pyprojects
-+ `uv.lock` + manifest, add the CHANGELOG entry, open a `chore(release):` PR,
-then tag with `git tag -a vX.Y.Z` and `git push origin vX.Y.Z`
-(`.github/workflows/release.yml` no longer exists — the tag-listening release
-job was superseded by release-please). `scripts/validate_versions.py` checks
-four-pyproject coherence for this path.
-
-### Pre-releases (release candidates)
-
-When a release introduces visible behavioural changes that downstream
-apps must validate before adopting, cut a **pre-release** first:
-
-- Tag as `vX.Y.Z-rc.N` (e.g. `v0.12.0-rc.1`).
-- Mark as **pre-release** in GitHub Releases UI (or `--prerelease`
-  on `gh release create`).
-- Promote to the stable tag only after downstream validation.
+1. `python scripts/bump_version.py X.Y.Z` — rewrites the version in all four
+   pyprojects; then `uv lock` so `uv.lock` matches.
+2. `python scripts/generate_changelog.py vPREV` — paste the output into a new
+   `CHANGELOG.md` section and edit it.
+3. `python scripts/validate_versions.py vX.Y.Z` — checks the four pyprojects agree.
+4. Commit (`chore(release): X.Y.Z`), tag `git tag -a vX.Y.Z`, push the branch
+   and the tag. Pre-releases use `vX.Y.Z-rc.N`.
 
 ### Maturity tiers
 
 Pipelines are classified Stable / Beta / Experimental in
 [docs/PIPELINE_MATURITY.md](docs/PIPELINE_MATURITY.md). CLI `--help`
 output for non-Stable subcommands carries a `[beta]` or
-`[experimental]` tag. Tier promotion criteria + per-tier stability
-guarantees live in that doc.
+`[experimental]` tag.
 
-### Downstream communication
+### Tests that need weights
 
-**Out of scope.** External communication with consumer apps / integrators
-is owned by Damien. The release process produces the artifacts above —
-notifying consumers, drafting changelog announcements, scheduling
-upgrades, etc., is not done from this repo.
+Weight-gated tests skip unless these point at local weights:
+`LTX_TEST_MODEL_DIR` (LTX-2.3 int8 pack), `LTX_TEST_LTX25_PACK_DIR` (LTX-2.5
+int8 pack), `LTX25_OFFICIAL_DIR` (official LTX-2.5 files). The PyTorch parity
+scripts in `tests/parity_keyframe/` also use `LTX_REFERENCE_DIR`,
+`LTX_MLX_REPO` and `LTX_PARITY_BF16_PACK_DIR`.
 
 ---
 
@@ -1203,13 +1160,14 @@ upgrades, etc., is not done from this repo.
 - Python 3.11+
 - Mandatory type hints on all functions
 - Google-style docstrings
-- ruff for formatting/linting (pre-commit + CI lint job)
+- ruff for formatting/linting (CI lint job)
 - Tests in `tests/` using pytest
 - **Conventional commits** (`feat:`, `fix:`, `chore:`, `docs:`,
-  `refactor:`, `feat!:` / `fix!:` for breaking) — enforced by
+  `refactor:`, `feat!:` / `fix!:` for breaking) — checked by
   `commitlint` in CI.
 - Package imports: `ltx_core_mlx.*` for core, `ltx_pipelines_mlx.*` for pipelines.
-- One PR = one concern + one version bump (see Release Process above).
+- One branch = one concern (see Release Process above).
+- ltx studio stays dependency-free: stdlib Python server, vanilla JS, no build step.
 
 ---
 
@@ -1218,5 +1176,5 @@ upgrades, etc., is not done from this repo.
 - **ltx-core**: [GitHub](https://github.com/Lightricks/LTX-2/tree/main/packages/ltx-core)
 - **ltx-pipelines**: [GitHub](https://github.com/Lightricks/LTX-2/tree/main/packages/ltx-pipelines)
 - **MLX**: [Docs](https://ml-explore.github.io/mlx/) · [GitHub](https://github.com/ml-explore/mlx)
-- **mlx-forge**: [GitHub](https://github.com/dgrauet/mlx-forge) — weight conversion
-- **Pre-converted weights**: [HuggingFace collection](https://huggingface.co/collections/dgrauet/ltx-23)
+- **Official LTX-2.5 weights**: [Lightricks/LTX-2.5](https://huggingface.co/Lightricks/LTX-2.5)
+- **This fork**: [janishar/ltx-2-mlx](https://github.com/janishar/ltx-2-mlx)

@@ -8,8 +8,8 @@
 #      ltx-2-mlx train --config configs/lora_t2v.yaml
 
 model:
-  # Local path to model weights (run `huggingface-cli download dgrauet/ltx-2.3-mlx-q8` first)
-  model_path: ~/.cache/huggingface/hub/models--dgrauet--ltx-2.3-mlx-q8/snapshots/latest
+  # Local MLX pack directory (LTX-2.3, int8, mlx-forge layout). ~ is expanded.
+  model_path: /path/to/ltx-2.3-pack
   text_encoder_path: mlx-community/gemma-3-12b-it-4bit
   training_mode: lora
 

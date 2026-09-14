@@ -11,7 +11,7 @@ Suitable for 32 GB hosts running the q8 model + Gemma text encoder.
 
 Usage:
     python -m ltx_pipelines_mlx.scripts.calibrate_teacache \\
-        --model-dir dgrauet/ltx-2.3-mlx-q8 \\
+        --model-dir /path/to/ltx-2.3-pack \\
         --prompts prompts.txt \\
         --num-steps 30 \\
         --out coefficients.json
@@ -68,7 +68,7 @@ class _StreamingCalibrator:
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--model-dir", required=True, help="HF repo or local dir, e.g. dgrauet/ltx-2.3-mlx-q8")
+    p.add_argument("--model-dir", required=True, help="MLX pack directory or Hugging Face repo id")
     p.add_argument("--prompts", required=True, type=Path, help="Path to a text file, one prompt per line")
     p.add_argument("--num-steps", type=int, default=30, help="Stage 1 denoising steps (default 30)")
     p.add_argument("--height", type=int, default=480)

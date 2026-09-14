@@ -11,9 +11,8 @@ import numpy as np
 from ltx_core_mlx.model.upsampler.model import LatentUpsampler
 from ltx_core_mlx.utils.weights import load_split_safetensors
 
-WEIGHTS = os.path.expanduser(
-    "~/.cache/huggingface/hub/models--dgrauet--ltx-2.3-mlx-q8/"
-    "snapshots/03da129baa459c9a70fc5858dee52fa417b3a93d/spatial_upscaler_x2_v1_1.safetensors"
+WEIGHTS = os.path.join(
+    os.path.expanduser(os.environ.get("LTX_TEST_MODEL_DIR", "")), "spatial_upscaler_x2_v1_1.safetensors"
 )
 PT = "/tmp/T7_upsampler_pt.npz"
 

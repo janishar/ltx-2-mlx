@@ -202,6 +202,8 @@ def test_cli_generate_distilled_lora_defaults_to_none(monkeypatch):
             "ltx-2-mlx",
             "generate",
             "--two-stage",
+            "--model",
+            "/models/pack",
             "--prompt",
             "a fox",
             "--frame-rate",

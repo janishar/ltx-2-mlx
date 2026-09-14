@@ -41,6 +41,7 @@ forward pass, and dumps:
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 import numpy as np
@@ -50,10 +51,10 @@ from transformers.models.gemma4_unified.modeling_gemma4_unified import Gemma4Uni
 
 SEED = 1234
 
-# Local (non-hub) pack, same convention as tests/conftest.py::_local_pack.
+# Local LTX-2.5 pack, same env var as tests/conftest.py::LTX25_Q8_DIR.
 # Only used for the tokenizer control-sentence dump below -- unrelated to
 # the tiny reference model's config/weights.
-PACK_DIR = Path.home() / "Work/mlx/models/ltx-2.5-mlx-q8"
+PACK_DIR = Path(os.environ.get("LTX_TEST_LTX25_PACK_DIR", "ltx-2.5-mlx-q8")).expanduser()
 CONTROL_SENTENCE = "A lone lighthouse keeper watches the storm roll in over the grey harbor."
 
 # Fixed tiny config, mirroring the real pack's *shape* (two attention

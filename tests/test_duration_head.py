@@ -171,7 +171,7 @@ def test_duration_head_pinned_regression():
 
 
 def _synthetic_duration_head_tensors(hidden: int = 8, video_dim: int = 12, audio_dim: int = 6) -> dict[str, mx.array]:
-    """Tiny fused-layout pack (the ``dgrauet/ltx-2.5-mlx*`` layout), ``duration_head.`` prefix included."""
+    """Tiny fused-layout pack (the mlx-forge pack layout), ``duration_head.`` prefix included."""
     mx.random.seed(125)
 
     def rnd(*shape: int) -> mx.array:

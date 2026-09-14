@@ -139,7 +139,9 @@ transposed to MLX layout and quantized per `--quantize-on-load` (`8` default,
 **MLX-converted pack** — split, channels-last safetensors with an
 `embedded_config.json`. LTX-2.3 runs only from such packs, and they are
 required for `--low-ram` block streaming and the IC-LoRA family (`ic-lora`,
-`hdr-ic-lora`, `lipdub`).
+`hdr-ic-lora`, `lipdub`). Pre-converted MLX packs made with
+mlx-forge load as-is; there is no
+default model, so pass `--model` or set `LTX_MODEL`.
 
 ## Usage
 
@@ -426,7 +428,7 @@ animated in-progress previews. Run `ltx-2-mlx <command> --help` for defaults.
 
 ### Environment variables
 
-- `LTX_MODEL` / `LTX_GEMMA` — defaults for the studio and the mode launcher.
+- `LTX_MODEL` / `LTX_GEMMA` — default `--model` / `--gemma` for the CLI, the studio and the mode launcher. There is no built-in default model.
 - `LTX_MLX_QUANTIZE_ON_LOAD` — `8` | `4` | `none` for official weights (set by `--quantize-on-load`).
 - `LTX_MLX_CACHE_DIR` — where virtual packs for official weights are cached (default `<repo>/.cache/virtual-packs`).
 - `LTX2_GEMMA_EVAL_EVERY=N` / `LTX2_DIT_EVAL_EVERY=N` — `mx.eval` cadence that keeps Metal command buffers under the macOS GPU watchdog (defaults `1` / `8`; `0` disables).
@@ -451,9 +453,14 @@ Contributions are welcome — bug reports, feature requests and pull requests on
 
 - Run the fast suite with `uv run pytest -m "not slow"` and lint with
   `uv run ruff check . && uv run ruff format --check .`.
+- Weight-gated tests skip unless `LTX_TEST_MODEL_DIR` (LTX-2.3 int8 pack) or
+  `LTX_TEST_LTX25_PACK_DIR` (LTX-2.5 int8 pack) point at local packs;
+  `LTX25_OFFICIAL_DIR` enables the official-weights loader tests.
 - Keep the web studio dependency-free: stdlib Python server, vanilla JS, no
   build step. New tasks go in `web/static/tasks.js`.
 - Use conventional commit messages (`feat:`, `fix:`, `docs:`, `chore:`).
+- Releases are manual: `scripts/bump_version.py X.Y.Z`, add the
+  `CHANGELOG.md` entry, then tag `vX.Y.Z`.
 
 ## License
 

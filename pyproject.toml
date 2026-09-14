@@ -5,7 +5,7 @@ description = "Pure MLX port of LTX-2 for Apple Silicon — inference, pipelines
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
-authors = [{ name = "dgrauet" }]
+authors = [{ name = "Janishar Ali" }]
 keywords = ["mlx", "video-generation", "diffusion", "apple-silicon", "ltx"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -34,8 +34,8 @@ dev = [
 all = ["ltx-2-mlx[trainer,dev]"]
 
 [project.urls]
-Homepage = "https://github.com/dgrauet/ltx-2-mlx"
-Repository = "https://github.com/dgrauet/ltx-2-mlx"
+Homepage = "https://github.com/janishar/ltx-2-mlx"
+Repository = "https://github.com/janishar/ltx-2-mlx"
 
 [tool.uv.workspace]
 members = ["packages/*"]
@@ -84,7 +84,7 @@ markers = [
 ]
 
 [tool.ty]
-# Strict-mode opt-in for PYTHON_QU003 (intendant). See ADR-0003 for rationale.
+# Strict type-checking settings.
 
 [tool.ty.src]
 # Exclude code paths that don't type-check cleanly under strict mode:

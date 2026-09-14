@@ -19,15 +19,14 @@
 #   2. Preprocess (video + text + audio latents):
 #      ltx-2-mlx preprocess --videos ./whisper_clips --captions ./whisper_clips \
 #        --with-audio --height 384 --width 384 --max-frames 97 --frame-rate 24 \
-#        --model dgrauet/ltx-2.3-mlx-q8 -o ./whisper_data
+#        --model /path/to/ltx-2.3-pack -o ./whisper_data
 #
 #   3. Train:
 #      ltx-2-mlx train --config packages/ltx-trainer/configs/lora_av_whisper.yaml
 
 model:
-  # Local path to the model snapshot dir (run `huggingface-cli download dgrauet/ltx-2.3-mlx-q8`
-  # then point this at .../snapshots/<hash>). ~ is expanded.
-  model_path: ~/.cache/huggingface/hub/models--dgrauet--ltx-2.3-mlx-q8/snapshots/latest
+  # Local MLX pack directory (LTX-2.3, int8, mlx-forge layout). ~ is expanded.
+  model_path: /path/to/ltx-2.3-pack
   # Train the LoRA on the non-distilled DEV base (correct target for a style LoRA
   # used in the dev-based one-stage / two-stage inference pipelines).
   transformer_file: transformer-dev.safetensors

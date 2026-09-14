@@ -10,6 +10,7 @@ of version.
 
 Run it once per environment and diff the two reports::
 
+    export LTX_MODEL=/path/to/ltx-2.3-pack                         # LTX-2.3 int8 MLX pack
     uv run python scripts/mlx_upgrade_report.py -o before.json     # current lock
     uv lock --upgrade-package mlx --upgrade-package mlx-metal
     uv sync --all-extras
@@ -43,6 +44,7 @@ import argparse
 import hashlib
 import importlib.metadata as md
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -57,6 +59,7 @@ sys.path.insert(0, str(REPO))
 PROMPT = "a heavy wooden door creaks slowly open in an old stone house, dust swirling in a shaft of afternoon light"
 SEED = 81647281
 HEIGHT, WIDTH, FRAMES = 512, 512, 25
+MODEL = os.environ.get("LTX_MODEL", "")
 
 # (M, K, N) taken from the real DiT: video 4096-dim, audio 2048-dim, the 9-param
 # AdaLN projection at 36864, and the 4x feed-forward expansions.
@@ -94,7 +97,7 @@ def layer2_text_embeddings() -> dict:
     """Gemma plus connector: everything downstream inherits any change here."""
     from ltx_pipelines_mlx.distilled import DistilledPipeline
 
-    pipe = DistilledPipeline(model_dir="dgrauet/ltx-2.3-mlx-q8")
+    pipe = DistilledPipeline(model_dir=MODEL)
     video, audio, neg_video, neg_audio = pipe._encode_text_with_negative(PROMPT)
     return {
         "video": _digest(video),
@@ -109,7 +112,7 @@ def layer3_latents() -> dict:
     from ltx_pipelines_mlx.distilled import DistilledPipeline
 
     mx.reset_peak_memory()
-    pipe = DistilledPipeline(model_dir="dgrauet/ltx-2.3-mlx-q8", low_ram_streaming=True)
+    pipe = DistilledPipeline(model_dir=MODEL, low_ram_streaming=True)
     video_latent, audio_latent = pipe.generate_two_stage(
         PROMPT, height=HEIGHT, width=WIDTH, num_frames=FRAMES, frame_rate=24.0, seed=SEED
     )
@@ -127,7 +130,7 @@ def layer4_render(tmp: Path, *, low_ram: bool) -> dict:
         str(Path(sys.executable).parent / "ltx-2-mlx"),
         "generate",
         "--model",
-        "dgrauet/ltx-2.3-mlx-q8",
+        MODEL,
         "--distilled",
         "--seed",
         str(SEED),
@@ -230,6 +233,8 @@ def main() -> int:
     if args.compare:
         before, after = (json.loads(p.read_text()) for p in args.compare)
         return compare(before, after)
+    if not MODEL:
+        parser.error("set LTX_MODEL to the model to fingerprint")
 
     tmp = Path(args.output).parent if args.output else Path.cwd()
     report = build_report(tmp)

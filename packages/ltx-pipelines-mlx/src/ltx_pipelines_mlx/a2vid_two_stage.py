@@ -4,7 +4,7 @@ Matches the reference architecture:
   Stage 1: Dev model + CFG at half resolution, audio frozen (encoded from input).
   Stage 2: Dev + distilled LoRA fused, refine video + audio at full resolution.
 
-Requires the dev model + distilled LoRA weights (e.g. dgrauet/ltx-2.3-mlx-q8).
+Requires the dev model + distilled LoRA weights.
 
 Ported from ltx-pipelines/src/ltx_pipelines/a2vid_two_stage.py
 """

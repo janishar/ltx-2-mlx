@@ -73,7 +73,7 @@ def _run_cli(tmp_path: Path, *, preview_dir: Path | None) -> RunResult:
         str(Path(sys.executable).parent / "ltx-2-mlx"),
         "generate",
         "--model",
-        "dgrauet/ltx-2.3-mlx-q8",
+        str(MODEL_DIR),
         "--distilled",
         "--low-ram",
         "--seed",

@@ -5,8 +5,8 @@ strips the 'spatial_upscaler_x2_v1_1.' prefix, transposes Conv weights,
 runs PT LatentUpsampler forward on a seeded random latent.
 
 Run from upstream venv:
-    cd /Users/dgrauet/sandbox/ltx-reference
-    uv run python /Users/dgrauet/Work/mlx/ports/ltx-2-mlx/tests/parity_keyframe/T7_dump_pt_upsampler.py
+    cd "$LTX_REFERENCE_DIR"  # Lightricks/LTX-2 checkout
+    uv run python "$LTX_MLX_REPO"/tests/parity_keyframe/T7_dump_pt_upsampler.py
 """
 
 from __future__ import annotations
@@ -19,14 +19,10 @@ import safetensors
 import torch
 from ltx_core.model.upsampler.model import LatentUpsampler
 
-WEIGHTS = os.path.expanduser(
-    "~/.cache/huggingface/hub/models--dgrauet--ltx-2.3-mlx-q8/"
-    "snapshots/03da129baa459c9a70fc5858dee52fa417b3a93d/spatial_upscaler_x2_v1_1.safetensors"
+WEIGHTS = os.path.join(
+    os.path.expanduser(os.environ.get("LTX_TEST_MODEL_DIR", "")), "spatial_upscaler_x2_v1_1.safetensors"
 )
-CFG = os.path.expanduser(
-    "~/.cache/huggingface/hub/models--dgrauet--ltx-2.3-mlx-q8/"
-    "snapshots/03da129baa459c9a70fc5858dee52fa417b3a93d/spatial_upscaler_x2_v1_1_config.json"
-)
+CFG = os.path.join(os.path.expanduser(os.environ.get("LTX_TEST_MODEL_DIR", "")), "spatial_upscaler_x2_v1_1_config.json")
 
 
 def load_pt_state_dict() -> dict:

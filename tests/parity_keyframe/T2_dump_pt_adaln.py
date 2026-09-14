@@ -9,8 +9,8 @@ builds PT AdaLayerNormSingle, runs forward on:
 Tests both video AdaLN (dim=4096, coef=9) and audio AdaLN (dim=2048, coef=9).
 
 Run from upstream venv:
-    cd /Users/dgrauet/sandbox/ltx-reference
-    uv run python /Users/dgrauet/Work/mlx/ports/ltx-2-mlx/tests/parity_keyframe/T2_dump_pt_adaln.py
+    cd "$LTX_REFERENCE_DIR"  # Lightricks/LTX-2 checkout
+    uv run python "$LTX_MLX_REPO"/tests/parity_keyframe/T2_dump_pt_adaln.py
 """
 
 from __future__ import annotations
