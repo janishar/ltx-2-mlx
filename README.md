@@ -256,6 +256,17 @@ video_lat, audio_lat = pipe.extend_from_video(
 )
 ```
 
+## Web UI (`web/`)
+
+**ltx studio** is a local browser UI over every `ltx-2-mlx` command — task
+picker, input library, live progress and terminal, queued renders, and a take
+history you can chain from (last frame → next shot, reuse settings, combine
+takes). Stdlib-only server, no build step. See [web/README.md](web/README.md).
+
+```bash
+bash web/run.sh --model /path/to/model   # then open http://127.0.0.1:8720
+```
+
 ## Mode Launcher (`scripts/ltx_run.py`)
 
 One command per input type, with lengths in seconds and times in seconds

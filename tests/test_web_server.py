@@ -1,0 +1,90 @@
+"""Unit tests for web/server.py (ltx studio). Stdlib only: no MLX, no HTTP server, no weights."""
+
+from __future__ import annotations
+
+import importlib.util
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+_spec = importlib.util.spec_from_file_location("ltx_studio_server", REPO_ROOT / "web" / "server.py")
+assert _spec is not None and _spec.loader is not None
+server = importlib.util.module_from_spec(_spec)
+sys.modules["ltx_studio_server"] = server
+_spec.loader.exec_module(server)
+
+
+@pytest.fixture
+def state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(server, "SESSIONS_DIR", tmp_path / "sessions")
+    return server.State("/models/ltx-2.5", None)
+
+
+@pytest.fixture
+def runner(state):
+    r = server.Runner.__new__(server.Runner)  # no worker thread
+    r.state = state
+    return r
+
+
+def test_safe_name():
+    assert server.safe_name("my shot/../x") == "my-shot-..-x"
+    assert server.safe_name("  ") == "untitled"
+
+
+def test_session_paths_stay_inside_sessions(state):
+    assert state.session_dir("../../etc").parent == server.SESSIONS_DIR.resolve()
+    with pytest.raises(ValueError):
+        state.resolve_media("session-1", "secrets", "x.png")
+    resolved = state.resolve_media("session-1", "inputs", "../../outputs/evil.png")
+    assert resolved.parent == state.session_dir("session-1") / "inputs"
+
+
+def test_build_argv_generate(state, runner):
+    session = state.ensure_session("session-1")
+    (session / "inputs" / "face.png").write_bytes(b"")
+    argv, output, _ = runner.build_argv({
+        "session": "session-1", "subcommand": "generate", "quantize": "8", "take_name": "shot 1",
+        "args": ["--prompt", "hi", "--distilled", "--image", {"input": "face.png"}, "0", "1.0",
+                 "--output", "/tmp/elsewhere.mp4", "--model", "other/model"],
+    })  # fmt: skip
+    assert argv[0] == "generate"
+    assert str(session / "inputs" / "face.png") in argv
+    assert "/tmp/elsewhere.mp4" not in argv and "other/model" not in argv
+    assert argv[argv.index("--model") + 1] == "/models/ltx-2.5"
+    assert argv[argv.index("--quantize-on-load") + 1] == "8"
+    assert output is not None and output.parent == session / "outputs" and output.name.startswith("shot-1-")
+    assert argv[argv.index("--output") + 1] == str(output)
+
+
+def test_build_argv_rejects_bad_requests(state, runner):
+    with pytest.raises(ValueError, match="unsupported command"):
+        runner.build_argv({"subcommand": "rm", "args": []})
+    with pytest.raises(ValueError, match="input not found"):
+        runner.build_argv({"subcommand": "generate", "args": [{"input": "missing.png"}]})
+    with pytest.raises(ValueError, match="bad argument"):
+        runner.build_argv({"subcommand": "generate", "args": [["nested"]]})
+
+
+def test_build_argv_tools_have_no_model_or_output(state, runner):
+    argv, output, _ = runner.build_argv({"subcommand": "enhance", "output": "none", "args": ["--prompt", "x"]})
+    assert "--model" not in argv and "--output" not in argv and output is None
+    argv, output, _ = runner.build_argv({"subcommand": "slice", "output": "dir", "args": [{"path": "~/clips"}]})
+    assert "--model" not in argv and output is not None and str(Path("~/clips").expanduser()) in argv
+
+
+def test_progress_parsing():
+    job = {"progress": {"phase": "", "step": 0, "total": 0, "stage": 0}}
+    assert server.Runner._parse(job, "[Loading transformer (transformer.safetensors)] ...")
+    assert job["progress"]["phase"].startswith("Loading transformer")
+    assert server.Runner._parse(job, "[estimate] denoising (ancestral): 8 steps x 1 passes over 539 video tokens")
+    assert job["progress"]["stage"] == 1 and job["progress"]["total"] == 8
+    assert server.Runner._parse(job, "Denoising (ancestral):  50%|█████     | 4/8 [00:04<00:04,  1.0s/it]")
+    assert (job["progress"]["step"], job["progress"]["total"]) == (4, 8)
+    assert not server.Runner._parse(job, "some unrelated line")
+
+
+def test_ffprobe_missing_file_is_empty(tmp_path: Path):
+    assert server.ffprobe(tmp_path / "nope.mp4") == {}

@@ -53,7 +53,11 @@ node_modules/
 
 # IDE / editor
 .idea/
-.vscode/
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/settings.json
+!.vscode/extensions.json
 *.swp
 
 # Run outputs (trainer default output dir, stepwise previews, HDR frames, logs)
@@ -62,3 +66,7 @@ wandb/
 *.log
 *.webp
 *.exr
+
+# ltx studio sessions (inputs, takes, UI state)
+/web/sessions/*
+!/web/sessions/.keep
